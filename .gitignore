@@ -1,0 +1,12 @@
+.env
+.env.example
+
+frontend/node_modules/
+frontend/dist/
+
+backend/bin/
+backend/tmp/
+
+*.log
+.DS_Store
+Thumbs.db

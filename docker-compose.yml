@@ -1,0 +1,79 @@
+services:
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: okf
+      POSTGRES_USER: okf
+      POSTGRES_PASSWORD: okf
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: okf
+      RABBITMQ_DEFAULT_PASS: okf
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+
+    environment:
+      MINIO_ROOT_USER: okfadmin
+      MINIO_ROOT_PASSWORD: okfpassword
+
+    ports:
+      - "9000:9000" #9001web, 9000 minIO
+      - "9001:9001"
+
+    volumes:
+      - minio_data:/data
+
+  api:
+    build:
+      context: ./backend
+      args:
+        SERVICE: api
+
+    ports:
+      - "8080:8080"
+
+    depends_on:
+      - postgres
+      - rabbitmq
+      - minio
+
+  worker:
+    build:
+      context: ./backend
+      args:
+        SERVICE: worker
+
+    depends_on:
+      - postgres
+      - rabbitmq
+      - minio
+
+  frontend:
+    build:
+      context: ./frontend
+
+    ports:
+      - "5173:80"
+
+    depends_on:
+      - api
+
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  minio_data:
