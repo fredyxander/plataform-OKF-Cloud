@@ -464,7 +464,7 @@ The project will progressively implement:
 - Docker Compose.
 - API health endpoint.
 
-### Milestone 2 — Asynchronous communication
+### Milestone 2 — Asynchronous communication ✅
 
 ```text
 POST /jobs/test
