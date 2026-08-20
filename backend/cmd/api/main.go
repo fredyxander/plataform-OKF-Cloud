@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/fredyxander/okf-platform/backend/internal/config"
+	"github.com/fredyxander/okf-platform/backend/internal/database"
 	"github.com/fredyxander/okf-platform/backend/internal/domain"
 	"github.com/fredyxander/okf-platform/backend/internal/queue"
 )
@@ -28,6 +30,25 @@ func main() {
 	}
 
 	defer rabbitMQ.Close()
+
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		log.Fatal("DATABASE_URL is not set")
+	}
+
+	db, err := database.New(dsn)
+	if err != nil {
+		log.Fatalf("connect to database: %v", err)
+	}
+	defer db.Close()
+
+	fmt.Println("Database connected")
+
+	if err := db.Migrate(); err != nil {
+		log.Fatalf("run migrations: %v", err)
+	}
+
+	fmt.Println("Database schema up to date")
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
