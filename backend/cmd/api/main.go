@@ -44,6 +44,12 @@ func main() {
 
 	fmt.Println("Database connected")
 
+	if err := db.Migrate(); err != nil {
+		log.Fatalf("run migrations: %v", err)
+	}
+
+	fmt.Println("Database schema up to date")
+
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
