@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"os"
 	"time"
@@ -123,33 +122,6 @@ func main() {
 
 			continue
 		}
-
-		// TEMPORAL: simular un error de procesamiento.
-		processingErr := fmt.Errorf("simulated processing error")
-
-		errMsg := processingErr.Error()
-
-		if err := db.UpdateJobStatus(
-			job.JobID,
-			domain.JobStatusFailed,
-			&errMsg,
-		); err != nil {
-			log.Printf("could not update job %s to failed: %v", job.JobID, err)
-
-			if nackErr := message.Nack(false, false); nackErr != nil {
-				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
-			}
-
-			continue
-		}
-
-		log.Printf("job failed: %s: %v", job.JobID, processingErr)
-
-		if ackErr := message.Ack(false); ackErr != nil {
-			log.Printf("could not acknowledge failed job %s: %v", job.JobID, ackErr)
-		}
-
-		continue
 
 		// TEMPORAL:
 		//

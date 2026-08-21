@@ -102,6 +102,16 @@ func (r *RabbitMQ) PublishJob(
 
 // Worker escucha
 func (r *RabbitMQ) ConsumeJobs() (<-chan amqp.Delivery, error) {
+	err := r.channel.Qos(
+		1,     // prefetchCount - RabbitMQ permitirá a este consumidor tener como máximo un mensaje entregado pero todavía sin ACK.
+		//Job B permanece en RabbitMQ -> ACk Job A -> RabbitMQ entrega siguiente mensaje al worker Job B, una vez completo el A
+		0,     // prefetchSize
+		false, // global
+	)
+	if err != nil {
+		return nil, fmt.Errorf("configure consumer qos: %w", err)
+	}
+
 	messages, err := r.channel.Consume(
 		JobsQueue,
 		"",
