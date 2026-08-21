@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 
 	"github.com/fredyxander/okf-platform/backend/internal/application"
 )
@@ -37,6 +38,7 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize) //limite de tamaño
 
 	file, header, err := r.FormFile("file")
+
 	if err != nil {
 		var maxBytesError *http.MaxBytesError
 
@@ -51,12 +53,35 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 
 	defer file.Close()
 
+	filename := filepath.Base(header.Filename)
+
+	if filename == "." || filename == "" {
+		http.Error(w, "invalid filename", http.StatusBadRequest)
+		return
+	}
+
+	contentType := header.Header.Get("Content-Type")
+
+	var format string
+
+	switch contentType {
+	case "text/plain":
+		format = "plaintext"
+
+	case "text/markdown":
+		format = "markdown"
+
+	default:
+		http.Error(w, "unsupported file type", http.StatusUnsupportedMediaType)
+		return
+	}
+
 	document, err := h.service.CreateDocument(
 		r.Context(),
 		ownerID,
-		header.Filename,
-		"plaintext",
-		header.Header.Get("Content-Type"),
+		filename,
+		format,
+		contentType,
 		header.Size,
 		file,
 	)
