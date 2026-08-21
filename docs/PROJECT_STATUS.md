@@ -1,6 +1,6 @@
 # Estado del proyecto --- Plataforma OKF Cloud
 
-**Fecha de corte:** 20 de agosto de 2026\
+**Fecha de corte:** 21 de agosto de 2026\
 **Repositorio:** `fredyxander/plataform-OKF-Cloud`\
 **Propósito de este documento:** servir como checkpoint técnico para
 continuar el desarrollo en una nueva sesión sin perder decisiones,
@@ -230,10 +230,12 @@ mediante `json.Unmarshal`.
 La API funciona como producer:
 
 1.  recibe `POST /jobs/test`;
-2.  genera UUID;
+2.  originalmente generaba un UUID aislado (comportamiento del Milestone 2);
 3.  construye `JobMessage`;
 4.  publica el mensaje en `document_jobs`;
 5.  responde `202 Accepted`.
+
+Desde el Milestone 3, el UUID publicado corresponde a un Job persistido previamente en PostgreSQL con estado `queued`.
 
 La API no realiza el procesamiento.
 
@@ -343,8 +345,7 @@ durante runtime.
 
 # 7. Capa de PostgreSQL incorporada por PR #1
 
-**Estado: IMPLEMENTADA EN CÓDIGO Y MERGEADA. REQUIERE
-INTEGRACIÓN/VERIFICACIÓN END-TO-END CON EL FLUJO DEL MILESTONE 2.**
+**Estado: IMPLEMENTADA, INTEGRADA Y VERIFICADA END-TO-END EN EL MILESTONE 3.**
 
 El PR #1, `feat: add database migrations and repository layer`, fue
 mergeado a `main` el 20 de agosto de 2026.
@@ -513,36 +514,30 @@ healthcheck y startup retry.
 
 ## Milestone 3 --- Persistencia PostgreSQL
 
-**PARCIALMENTE/AMPLIAMENTE IMPLEMENTADO; SIGUIENTE OBJETIVO: VERIFICAR E
-INTEGRAR.**
+**COMPLETADO Y VERIFICADO.**
 
-Ya existen:
+Se verificó e integró la capa PostgreSQL incorporada por el PR #1 con el flujo asíncrono del Milestone 2.
 
--   conexión PostgreSQL;
--   migraciones;
--   tabla de control de migraciones;
--   advisory lock;
--   modelos de dominio relacionados;
--   repositorio de usuarios;
--   repositorio de documentos;
--   repositorio de jobs;
--   repositorio de bundles;
--   idempotency key en jobs.
+Resultados principales:
 
-Lo que falta no es volver a construir esta capa, sino:
+- migración `001_init.sql` aplicada correctamente desde una base limpia;
+- `schema_migrations` registra la migración y una segunda ejecución no la reaplica;
+- tablas `users`, `documents`, `jobs`, `bundles` y `schema_migrations` verificadas;
+- modelos Go revisados contra el esquema SQL;
+- repositories de usuarios, documentos, jobs y bundles probados contra PostgreSQL real;
+- aislamiento por `owner_id` comprobado en las consultas correspondientes;
+- API crea primero un Job persistido con estado `queued` y publica ese mismo `JobID` en RabbitMQ;
+- worker conectado directamente a PostgreSQL, sin depender de la API;
+- ciclo `queued → processing → completed` verificado en PostgreSQL;
+- transición `processing → failed` y persistencia de `error_message` verificadas mediante un fallo controlado temporal;
+- trigger `updated_at` verificado durante las transiciones;
+- RabbitMQ QoS configurado con `prefetch = 1` y comprobado con dos jobs consecutivos;
+- suite `go test ./...` ejecutada satisfactoriamente con PostgreSQL disponible.
 
-1.  verificar las migraciones desde una base vacía;
-2.  inspeccionar el esquema final creado por `001_init.sql`;
-3.  probar CRUD/repositories;
-4.  conectar el endpoint de creación de jobs con `CreateJob`;
-5.  hacer que el `JobMessage` transporte el ID persistido en PostgreSQL;
-6.  hacer que el worker actualice el estado del job;
-7.  verificar el ciclo completo de estados.
-
-Flujo objetivo inmediato:
+Flujo actualmente verificado:
 
 ``` text
-POST job
+POST /jobs/test
    │
    ▼
 API
@@ -552,23 +547,20 @@ API
    └── RabbitMQ: publish JobID
                      │
                      ▼
-                  Worker
+                   Worker
                      │
                      ├── PostgreSQL → PROCESSING
                      │
-                     ├── procesa
+                     ├── procesamiento temporal
                      │
                      └── PostgreSQL → COMPLETED
+                                   ↓
+                                  ACK
 ```
 
-En caso de error:
+El camino `FAILED + error_message` también fue probado, pero el error simulado usado para verificarlo fue retirado después de la prueba.
 
-``` text
-PROCESSING
-    ↓
- FAILED
- + error_message
-```
+**Elementos todavía temporales:** `/jobs/test`, recepción manual de `ownerId`/`documentId` y `time.Sleep(10 * time.Second)` como simulación del procesamiento real.
 
 ## Milestone 4 --- Autenticación y autorización
 
@@ -652,9 +644,9 @@ Objetivos detallados en la siguiente sección.
 
 # 9. Deuda técnica y decisiones que NO deben olvidarse
 
-## 9.1 RabbitMQ prefetch / QoS
+## 9.1 RabbitMQ prefetch / QoS — RESUELTO EN MILESTONE 3
 
-Actualmente debe revisarse/configurarse `prefetch`.
+Se configuró `prefetch = 1` mediante QoS en el consumer y se verificó con dos jobs consecutivos.
 
 Con múltiples workers y trabajos largos queremos evitar que un consumer
 acumule demasiados mensajes sin confirmar.
@@ -794,9 +786,9 @@ Se debe verificar especialmente:
 -   comportamiento con dos instancias de API;
 -   rollback ante SQL inválido.
 
-## 9.11 Worker + PostgreSQL
+## 9.11 Worker + PostgreSQL — RESUELTO EN MILESTONE 3
 
-El worker todavía debe integrarse con la base de datos.
+El worker está integrado directamente con PostgreSQL y actualiza los estados de los jobs.
 
 No debe depender de la API para actualizar jobs.
 
@@ -877,77 +869,21 @@ Se agregó validación de `job.JobID == ""` y NACK.
 
 # 11. Próximo paso recomendado
 
-No iniciar un "Milestone 3 desde cero".
+El Milestone 3 está completado. El siguiente bloque de trabajo es:
 
-El siguiente bloque de trabajo debe llamarse:
-
-## Milestone 3 --- Verificación e integración de persistencia
+## Milestone 4 --- Autenticación y autorización
 
 Orden recomendado:
 
-### Paso 3.1 --- Verificar migraciones
+1. definir el flujo de registro y login;
+2. implementar password hashing;
+3. definir e implementar JWT/sesión según la arquitectura elegida;
+4. agregar middleware de autenticación;
+5. obtener `owner_id` desde la identidad autenticada, eliminando su envío manual desde `/jobs/test`;
+6. aplicar y probar autorización sobre documentos, jobs y bundles;
+7. verificar explícitamente que conocer un UUID ajeno no permite acceder al recurso ni revela su existencia.
 
-Desde una base vacía:
-
-``` text
-docker compose down -v
-docker compose up -d --build
-```
-
-Confirmar que:
-
--   PostgreSQL arranca;
--   API conecta;
--   `db.Migrate()` termina;
--   `schema_migrations` contiene `001_init.sql`;
--   las tablas esperadas existen.
-
-**Advertencia:** `down -v` elimina datos locales. Solo hacerlo cuando el
-entorno pueda resetearse.
-
-### Paso 3.2 --- Entender el esquema
-
-Revisar juntos `001_init.sql` y los structs de `internal/domain`.
-
-Documentar:
-
--   PK;
--   FK;
--   índices;
--   constraints;
--   estados;
--   relaciones User → Document → Job → Bundle.
-
-### Paso 3.3 --- Probar repositories
-
-Crear pruebas o endpoints temporales controlados para verificar:
-
--   users;
--   documents;
--   jobs;
--   bundles.
-
-### Paso 3.4 --- Integrar Job real con RabbitMQ
-
-Reemplazar el UUID aislado del milestone 2 por un registro real de
-PostgreSQL.
-
-### Paso 3.5 --- Worker actualiza estado
-
-``` text
-QUEUED
- ↓
-PROCESSING
- ↓
-COMPLETED
-```
-
-y luego probar `FAILED`.
-
-### Paso 3.6 --- Configurar prefetch
-
-Antes o durante la prueba con múltiples workers, configurar QoS/prefetch
-y comprobar distribución.
+Antes de reemplazar `/jobs/test`, conservar el flujo ya verificado `CreateJob → RabbitMQ → Worker → PostgreSQL` como referencia de integración.
 
 ------------------------------------------------------------------------
 
@@ -998,14 +934,13 @@ Usar este texto junto con este archivo:
 Infraestructura Docker          ██████████  completa
 RabbitMQ async flow             ██████████  completo
 Robustez básica RabbitMQ        ██████████  completa para startup
-Capa PostgreSQL                 ████████░░  implementada; falta verificación/integración
+Capa PostgreSQL                 ██████████  completa e integrada
 Autenticación                   ░░░░░░░░░░  pendiente
 MinIO funcional                 ░░░░░░░░░░  pendiente
 Pipeline OKF                    ░░░░░░░░░░  pendiente
-Confiabilidad avanzada          ██░░░░░░░░  parcialmente preparada
+Confiabilidad avanzada          ████░░░░░░  prefetch/ACK listos; faltan retry/DLQ/idempotencia
 Frontend funcional              ░░░░░░░░░░  pendiente
 Observabilidad/pruebas finales  ░░░░░░░░░░  pendiente
 ```
 
-**Siguiente acción:** verificar e integrar la capa PostgreSQL ya
-mergeada antes de implementar nuevas funcionalidades.
+**Siguiente acción:** iniciar el Milestone 4 --- autenticación y autorización, manteniendo el desarrollo incremental y las pruebas verificables.

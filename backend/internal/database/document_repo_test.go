@@ -23,7 +23,10 @@ func TestCreateAndGetDocument(t *testing.T) {
 	document, err := db.CreateDocument(
 		user.ID,
 		"example.txt",
-		"documents/test/example.txt",
+		fmt.Sprintf(
+			"documents/test/%d/example.txt",
+			time.Now().UnixNano(),
+		),
 		"plaintext",
 		1234,
 	)

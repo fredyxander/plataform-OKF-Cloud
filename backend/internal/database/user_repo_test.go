@@ -1,8 +1,10 @@
 package database
 
 import (
+	"fmt"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestCreateAndGetUser(t *testing.T) {
@@ -17,7 +19,10 @@ func TestCreateAndGetUser(t *testing.T) {
 	}
 	defer db.Close()
 
-	email := "test-user@example.com"
+	email := fmt.Sprintf(
+		"test-user-%d@example.com",
+		time.Now().UnixNano(),
+	)
 	passwordHash := "fake-hash-for-test"
 
 	user, err := db.CreateUser(email, passwordHash)
