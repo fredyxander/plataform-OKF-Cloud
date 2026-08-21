@@ -12,9 +12,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/fredyxander/okf-platform/backend/internal/application"
 	"github.com/fredyxander/okf-platform/backend/internal/config"
 	"github.com/fredyxander/okf-platform/backend/internal/database"
 	"github.com/fredyxander/okf-platform/backend/internal/domain"
+	httpapi "github.com/fredyxander/okf-platform/backend/internal/http"
 	"github.com/fredyxander/okf-platform/backend/internal/queue"
 	"github.com/fredyxander/okf-platform/backend/internal/storage"
 )
@@ -91,6 +93,16 @@ func main() {
 
 	log.Println("MinIO connected and bucket ready")
 
+	//servicio y handler de documentos
+	documentService := application.NewDocumentService(
+		db,
+		minioStorage,
+	)
+
+	documentHandler := httpapi.NewDocumentHandler(
+		documentService,
+	)
+
 	//endpoints
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -99,6 +111,8 @@ func main() {
 			"status": "ok",
 		})
 	})
+
+	http.HandleFunc("/documents", documentHandler.Upload)
 
 	http.HandleFunc("/jobs/test", func(w http.ResponseWriter, r *http.Request) {
 
