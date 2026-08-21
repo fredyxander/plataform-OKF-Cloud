@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/fredyxander/okf-platform/backend/internal/application"
 )
+
+const maxUploadSize int64 = 10 * 1024 * 1024 // 10 MB
 
 type DocumentHandler struct {
 	service *application.DocumentService
@@ -31,11 +34,21 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize) //limite de tamaño
+
 	file, header, err := r.FormFile("file")
 	if err != nil {
+		var maxBytesError *http.MaxBytesError
+
+		if errors.As(err, &maxBytesError) {
+			http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+
 		http.Error(w, "file is required", http.StatusBadRequest)
 		return
 	}
+
 	defer file.Close()
 
 	document, err := h.service.CreateDocument(
