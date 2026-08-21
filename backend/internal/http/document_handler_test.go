@@ -75,6 +75,16 @@ func newTestDocumentHandler() *DocumentHandler {
 	return NewDocumentHandler(service)
 }
 
+func withUserID(req *http.Request, userID string) *http.Request {
+	ctx := context.WithValue(
+		req.Context(),
+		userIDContextKey,
+		userID,
+	)
+
+	return req.WithContext(ctx)
+}
+
 // cargar documento sin owner
 func TestUploadWithoutOwner(t *testing.T) {
 	handler := newTestDocumentHandler()
@@ -89,8 +99,8 @@ func TestUploadWithoutOwner(t *testing.T) {
 
 	handler.Upload(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }
 
@@ -112,7 +122,7 @@ func TestUploadWithoutFile(t *testing.T) {
 	)
 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("X-Test-Owner-ID", "owner-id")
+	req = withUserID(req, "owner-id")
 
 	rec := httptest.NewRecorder()
 
@@ -145,7 +155,7 @@ func TestUploadUnsupportedType(t *testing.T) {
 	)
 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("X-Test-Owner-ID", "owner-id")
+	req = withUserID(req, "owner-id")
 
 	rec := httptest.NewRecorder()
 
@@ -185,7 +195,7 @@ func TestUploadFileTooLarge(t *testing.T) {
 	)
 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("X-Test-Owner-ID", "owner-id")
+	req = withUserID(req, "owner-id")
 
 	rec := httptest.NewRecorder()
 

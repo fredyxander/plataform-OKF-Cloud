@@ -132,67 +132,85 @@ func main() {
 	http.HandleFunc("/auth/register", authHandler.Register)
 	http.HandleFunc("/auth/login", authHandler.Login)
 
-	http.HandleFunc("/documents", documentHandler.Upload)
+	// ENDPOINTS PROTEGIDOS
+	http.HandleFunc(
+		"/documents",
+		httpapi.AuthMiddleware(tokenManager, documentHandler.Upload),
+	)
 
 	http.HandleFunc(
 		"GET /documents/{id}/download",
-		documentHandler.Download,
+		httpapi.AuthMiddleware(tokenManager, documentHandler.Download),
 	)
 
-	http.HandleFunc("/jobs/test", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/jobs/test",
+		httpapi.AuthMiddleware(
+			tokenManager,
+			func(w http.ResponseWriter, r *http.Request) {
 
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
 
-		var req struct {
-			DocumentID string `json:"documentId"`
-			OwnerID    string `json:"ownerId"`
-		}
+				var req struct {
+					DocumentID string `json:"documentId"`
+				}
 
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid request body", http.StatusBadRequest)
+					return
+				}
 
-		if req.DocumentID == "" || req.OwnerID == "" {
-			http.Error(w, "documentId and ownerId are required", http.StatusBadRequest)
-			return
-		}
+				ownerID, ok := httpapi.UserIDFromContext(r.Context())
+				if !ok {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
 
-		persistedJob, err := db.CreateJob(
-			req.DocumentID,
-			req.OwnerID,
-			uuid.NewString(),
+				if req.DocumentID == "" {
+					http.Error(w, "documentId is required", http.StatusBadRequest)
+					return
+				}
+
+				_, err = db.GetDocumentByID(req.DocumentID, ownerID)
+				if err != nil {
+					http.Error(w, "document not found", http.StatusNotFound)
+					return
+				}
+				persistedJob, err := db.CreateJob(
+					req.DocumentID,
+					ownerID,
+					uuid.NewString(),
+				)
+				if err != nil {
+					http.Error(w, "could not create job", http.StatusInternalServerError)
+					return
+				}
+
+				job := domain.JobMessage{
+					JobID: persistedJob.ID,
+				}
+
+				if err := rabbitMQ.PublishJob(r.Context(), job); err != nil {
+					http.Error(
+						w,
+						"could not publish job",
+						http.StatusInternalServerError,
+					)
+
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+
+				json.NewEncoder(w).Encode(map[string]string{
+					"jobId":  persistedJob.ID,
+					"status": "queued",
+				})
+			}),
 		)
-		if err != nil {
-			http.Error(w, "could not create job", http.StatusInternalServerError)
-			return
-		}
-
-		job := domain.JobMessage{
-			JobID: persistedJob.ID,
-		}
-
-		if err := rabbitMQ.PublishJob(r.Context(), job); err != nil {
-			http.Error(
-				w,
-				"could not publish job",
-				http.StatusInternalServerError,
-			)
-
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-
-		json.NewEncoder(w).Encode(map[string]string{
-			"jobId":  persistedJob.ID,
-			"status": "queued",
-		})
-	})
 
 	//http server
 	fmt.Println("API listening on :8080")

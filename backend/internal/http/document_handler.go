@@ -29,9 +29,9 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ownerID := r.Header.Get("X-Test-Owner-ID")
-	if ownerID == "" {
-		http.Error(w, "X-Test-Owner-ID is required", http.StatusBadRequest)
+	ownerID, ok := UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -104,9 +104,9 @@ func (h *DocumentHandler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ownerID := r.Header.Get("X-Test-Owner-ID")
-	if ownerID == "" {
-		http.Error(w, "X-Test-Owner-ID is required", http.StatusBadRequest)
+	ownerID, ok := UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
