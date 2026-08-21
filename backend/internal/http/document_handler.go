@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/fredyxander/okf-platform/backend/internal/application"
@@ -54,6 +56,47 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 
 	if err := json.NewEncoder(w).Encode(document); err != nil {
+		return
+	}
+}
+
+func (h *DocumentHandler) Download(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ownerID := r.Header.Get("X-Test-Owner-ID")
+	if ownerID == "" {
+		http.Error(w, "X-Test-Owner-ID is required", http.StatusBadRequest)
+		return
+	}
+
+	documentID := r.PathValue("id")
+	if documentID == "" {
+		http.Error(w, "document id is required", http.StatusBadRequest)
+		return
+	}
+
+	document, object, err := h.service.GetDocument(
+		r.Context(),
+		documentID,
+		ownerID,
+	)
+	if err != nil {
+		http.Error(w, "document not found", http.StatusNotFound)
+		return
+	}
+	defer object.Close()
+
+	w.Header().Set(
+		"Content-Disposition",
+		fmt.Sprintf(`attachment; filename="%s"`, document.Filename),
+	)
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+
+	if _, err := io.Copy(w, object); err != nil {
 		return
 	}
 }

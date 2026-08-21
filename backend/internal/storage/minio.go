@@ -82,7 +82,7 @@ func (m *MinIO) PutObject(
 func (m *MinIO) GetObject(
 	ctx context.Context,
 	objectKey string,
-) (*minio.Object, error) {
+) (io.ReadCloser, error) {
 	object, err := m.client.GetObject(
 		ctx,
 		m.bucket,

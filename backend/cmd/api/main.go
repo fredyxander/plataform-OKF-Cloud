@@ -114,6 +114,11 @@ func main() {
 
 	http.HandleFunc("/documents", documentHandler.Upload)
 
+	http.HandleFunc(
+		"GET /documents/{id}/download",
+		documentHandler.Download,
+	)
+
 	http.HandleFunc("/jobs/test", func(w http.ResponseWriter, r *http.Request) {
 
 		if r.Method != http.MethodPost {

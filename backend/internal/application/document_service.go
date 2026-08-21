@@ -21,6 +21,11 @@ type DocumentRepository interface {
 		format string,
 		sizeBytes int64,
 	) (*domain.Document, error)
+
+	GetDocumentByID(
+		id string,
+		ownerID string,
+	) (*domain.Document, error)
 }
 
 type ObjectStorage interface {
@@ -36,6 +41,11 @@ type ObjectStorage interface {
 		ctx context.Context,
 		objectKey string,
 	) error
+
+	GetObject(
+		ctx context.Context,
+		objectKey string,
+	) (io.ReadCloser, error)
 }
 
 type DocumentService struct {
@@ -96,4 +106,29 @@ func (s *DocumentService) CreateDocument(
 	}
 
 	return document, nil
+}
+
+func (s *DocumentService) GetDocument(
+	ctx context.Context,
+	documentID string,
+	ownerID string,
+) (*domain.Document, io.ReadCloser, error) {
+
+	document, err := s.repository.GetDocumentByID(
+		documentID,
+		ownerID,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get document metadata: %w", err)
+	}
+
+	object, err := s.storage.GetObject(
+		ctx,
+		document.StorageKey,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get document object: %w", err)
+	}
+
+	return document, object, nil
 }

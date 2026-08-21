@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"testing"
@@ -33,6 +34,13 @@ func (r *failingDocumentRepository) CreateDocument(
 ) (*domain.Document, error) {
 	r.storageKey = storageKey
 	return nil, errors.New("simulated database error")
+}
+
+func (r *failingDocumentRepository) GetDocumentByID(
+	id string,
+	ownerID string,
+) (*domain.Document, error) {
+	return nil, errors.New("not implemented")
 }
 
 func TestDocumentServiceCreateDocument(t *testing.T) {
@@ -130,16 +138,16 @@ func TestDocumentServiceCreateDocument(t *testing.T) {
 	}
 	defer object.Close()
 
-	info, err := object.Stat()
+	data, err := io.ReadAll(object)
 	if err != nil {
-		t.Fatalf("stat object: %v", err)
+		t.Fatalf("read object: %v", err)
 	}
 
-	if info.Size != int64(len(content)) {
+	if int64(len(data)) != int64(len(content)) {
 		t.Fatalf(
 			"expected object size %d, got %d",
 			len(content),
-			info.Size,
+			len(data),
 		)
 	}
 }
@@ -209,7 +217,7 @@ func TestDocumentServiceDeletesObjectWhenRepositoryFails(t *testing.T) {
 	}
 	defer object.Close()
 
-	_, err = object.Stat()
+	_, err = io.ReadAll(object)
 	if err == nil {
 		t.Fatal("expected object to have been deleted from MinIO")
 	}
