@@ -65,11 +65,34 @@ func main() {
 			return
 		}
 
-		jobID := uuid.NewString()
+	var req struct {
+		DocumentID string `json:"documentId"`
+		OwnerID    string `json:"ownerId"`
+	}
 
-		job := domain.JobMessage{
-			JobID: jobID,
-		}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.DocumentID == "" || req.OwnerID == "" {
+		http.Error(w, "documentId and ownerId are required", http.StatusBadRequest)
+		return
+	}
+
+	persistedJob, err := db.CreateJob(
+		req.DocumentID,
+		req.OwnerID,
+		uuid.NewString(),
+	)
+	if err != nil {
+		http.Error(w, "could not create job", http.StatusInternalServerError)
+		return
+	}
+
+	job := domain.JobMessage{
+		JobID: persistedJob.ID,
+	}
 
 		if err := rabbitMQ.PublishJob(r.Context(), job); err != nil {
 			http.Error(
@@ -85,7 +108,7 @@ func main() {
 		w.WriteHeader(http.StatusAccepted)
 
 		json.NewEncoder(w).Encode(map[string]string{
-			"jobId":  jobID,
+			"jobId": persistedJob.ID,
 			"status": "queued",
 		})
 	})

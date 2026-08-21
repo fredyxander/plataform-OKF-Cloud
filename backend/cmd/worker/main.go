@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"os"
 	"time"
 
 	"github.com/fredyxander/okf-platform/backend/internal/config"
+	"github.com/fredyxander/okf-platform/backend/internal/database"
 	"github.com/fredyxander/okf-platform/backend/internal/domain"
 	"github.com/fredyxander/okf-platform/backend/internal/queue"
 )
@@ -27,6 +29,20 @@ func main() {
 	// 3. Cuando el programa termine, cerramos correctamente
 	//    la conexión y el channel de RabbitMQ.
 	defer rabbitMQ.Close()
+
+	// 3.1. Conexión a base de datos postgres
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		log.Fatal("DATABASE_URL is not set")
+	}
+
+	db, err := database.New(dsn)
+	if err != nil {
+		log.Fatalf("connect to database: %v", err)
+	}
+	defer db.Close()
+
+	log.Println("Database connected")
 
 	// 4. Nos suscribimos a la cola de trabajos.
 	messages, err := rabbitMQ.ConsumeJobs()
@@ -92,6 +108,21 @@ func main() {
 		// 8. Aquí empieza conceptualmente el procesamiento.
 		log.Printf("processing job: %s", job.JobID)
 
+		// Actualiza estado en postgres a processing del job
+		if err := db.UpdateJobStatus(
+			job.JobID,
+			domain.JobStatusProcessing,
+			nil,
+		); err != nil {
+			log.Printf("could not update job %s to processing: %v", job.JobID, err)
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
 		// TEMPORAL:
 		//
 		// Simula una conversión documental que tarda 10 segundos.
@@ -99,6 +130,22 @@ func main() {
 		// que el worker sigue trabajando independientemente.
 		time.Sleep(10 * time.Second)
 
+		// Actualiza estado a completed en postgres
+		if err := db.UpdateJobStatus(
+			job.JobID,
+			domain.JobStatusCompleted,
+			nil,
+		); err != nil {
+			log.Printf("could not update job %s to completed: %v", job.JobID, err)
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
+		//log en terminal de completed
 		log.Printf("job completed: %s", job.JobID)
 
 		// 9. Solo hacemos ACK después de terminar correctamente.
