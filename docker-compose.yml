@@ -42,8 +42,8 @@ services:
     command: server /data --console-address ":9001"
 
     environment:
-      MINIO_ROOT_USER: okfadmin
-      MINIO_ROOT_PASSWORD: okfpassword
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
 
     ports:
       - "9000:9000" #9001web, 9000 minIO
@@ -66,6 +66,11 @@ services:
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       DATABASE_URL: postgres://okf:okf@postgres:5432/okf?sslmode=disable
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_USE_SSL: ${MINIO_USE_SSL}
+      MINIO_BUCKET: ${MINIO_BUCKET}
 
     depends_on:
       rabbitmq:
@@ -86,6 +91,11 @@ services:
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       DATABASE_URL: postgres://okf:okf@postgres:5432/okf?sslmode=disable
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_USE_SSL: ${MINIO_USE_SSL}
+      MINIO_BUCKET: ${MINIO_BUCKET}
 
     depends_on:
       rabbitmq:
