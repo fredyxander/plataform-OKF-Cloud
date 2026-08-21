@@ -230,12 +230,14 @@ mediante `json.Unmarshal`.
 La API funciona como producer:
 
 1.  recibe `POST /jobs/test`;
-2.  originalmente generaba un UUID aislado (comportamiento del Milestone 2);
+2.  originalmente generaba un UUID aislado (comportamiento del Milestone
+    2);
 3.  construye `JobMessage`;
 4.  publica el mensaje en `document_jobs`;
 5.  responde `202 Accepted`.
 
-Desde el Milestone 3, el UUID publicado corresponde a un Job persistido previamente en PostgreSQL con estado `queued`.
+Desde el Milestone 3, el UUID publicado corresponde a un Job persistido
+previamente en PostgreSQL con estado `queued`.
 
 La API no realiza el procesamiento.
 
@@ -345,7 +347,8 @@ durante runtime.
 
 # 7. Capa de PostgreSQL incorporada por PR #1
 
-**Estado: IMPLEMENTADA, INTEGRADA Y VERIFICADA END-TO-END EN EL MILESTONE 3.**
+**Estado: IMPLEMENTADA, INTEGRADA Y VERIFICADA END-TO-END EN EL
+MILESTONE 3.**
 
 El PR #1, `feat: add database migrations and repository layer`, fue
 mergeado a `main` el 20 de agosto de 2026.
@@ -516,23 +519,33 @@ healthcheck y startup retry.
 
 **COMPLETADO Y VERIFICADO.**
 
-Se verificó e integró la capa PostgreSQL incorporada por el PR #1 con el flujo asíncrono del Milestone 2.
+Se verificó e integró la capa PostgreSQL incorporada por el PR #1 con el
+flujo asíncrono del Milestone 2.
 
 Resultados principales:
 
-- migración `001_init.sql` aplicada correctamente desde una base limpia;
-- `schema_migrations` registra la migración y una segunda ejecución no la reaplica;
-- tablas `users`, `documents`, `jobs`, `bundles` y `schema_migrations` verificadas;
-- modelos Go revisados contra el esquema SQL;
-- repositories de usuarios, documentos, jobs y bundles probados contra PostgreSQL real;
-- aislamiento por `owner_id` comprobado en las consultas correspondientes;
-- API crea primero un Job persistido con estado `queued` y publica ese mismo `JobID` en RabbitMQ;
-- worker conectado directamente a PostgreSQL, sin depender de la API;
-- ciclo `queued → processing → completed` verificado en PostgreSQL;
-- transición `processing → failed` y persistencia de `error_message` verificadas mediante un fallo controlado temporal;
-- trigger `updated_at` verificado durante las transiciones;
-- RabbitMQ QoS configurado con `prefetch = 1` y comprobado con dos jobs consecutivos;
-- suite `go test ./...` ejecutada satisfactoriamente con PostgreSQL disponible.
+-   migración `001_init.sql` aplicada correctamente desde una base
+    limpia;
+-   `schema_migrations` registra la migración y una segunda ejecución no
+    la reaplica;
+-   tablas `users`, `documents`, `jobs`, `bundles` y `schema_migrations`
+    verificadas;
+-   modelos Go revisados contra el esquema SQL;
+-   repositories de usuarios, documentos, jobs y bundles probados contra
+    PostgreSQL real;
+-   aislamiento por `owner_id` comprobado en las consultas
+    correspondientes;
+-   API crea primero un Job persistido con estado `queued` y publica ese
+    mismo `JobID` en RabbitMQ;
+-   worker conectado directamente a PostgreSQL, sin depender de la API;
+-   ciclo `queued → processing → completed` verificado en PostgreSQL;
+-   transición `processing → failed` y persistencia de `error_message`
+    verificadas mediante un fallo controlado temporal;
+-   trigger `updated_at` verificado durante las transiciones;
+-   RabbitMQ QoS configurado con `prefetch = 1` y comprobado con dos
+    jobs consecutivos;
+-   suite `go test ./...` ejecutada satisfactoriamente con PostgreSQL
+    disponible.
 
 Flujo actualmente verificado:
 
@@ -558,9 +571,12 @@ API
                                   ACK
 ```
 
-El camino `FAILED + error_message` también fue probado, pero el error simulado usado para verificarlo fue retirado después de la prueba.
+El camino `FAILED + error_message` también fue probado, pero el error
+simulado usado para verificarlo fue retirado después de la prueba.
 
-**Elementos todavía temporales:** `/jobs/test`, recepción manual de `ownerId`/`documentId` y `time.Sleep(10 * time.Second)` como simulación del procesamiento real.
+**Elementos todavía temporales:** `/jobs/test`, recepción manual de
+`ownerId`/`documentId` y `time.Sleep(10 * time.Second)` como simulación
+del procesamiento real.
 
 ## Milestone 4 --- Autenticación y autorización
 
@@ -579,18 +595,77 @@ Objetivos:
 
 ## Milestone 5 --- Documentos + MinIO
 
-**PENDIENTE.**
+**COMPLETADO Y VERIFICADO.**
 
-Objetivos:
+Se implementó la persistencia real de documentos originales combinando
+MinIO para objetos y PostgreSQL para metadata.
 
--   configurar cliente MinIO;
--   bucket(s);
--   upload real;
--   guardar archivo original en object storage;
--   crear metadata `Document` en PostgreSQL;
--   usar `storage_key`;
--   límites/tipos de archivo;
--   descarga controlada.
+Resultados principales:
+
+-   cliente MinIO implementado en Go y conectado desde la API;
+-   creación/verificación automática del bucket durante el arranque;
+-   operaciones `PutObject`, `GetObject` y `DeleteObject` implementadas
+    y probadas;
+-   `DocumentService` agregado como capa de aplicación para coordinar
+    object storage y repository sin acoplarlos directamente;
+-   flujo `MinIO PutObject → PostgreSQL CreateDocument` probado contra
+    infraestructura real;
+-   compensación implementada: si falla PostgreSQL después del upload,
+    el objeto se elimina de MinIO;
+-   test automático de la compensación con repository simulado en fallo;
+-   endpoint `POST /documents` implementado con `multipart/form-data`;
+-   endpoint `GET /documents/{id}/download` implementado mediante
+    streaming desde MinIO;
+-   aislamiento por `owner_id` verificado: un owner diferente obtiene
+    `404` aun conociendo el UUID del documento;
+-   límite de upload de 10 MB mediante `http.MaxBytesReader`;
+-   archivos que exceden el límite retornan
+    `413 Request Entity Too Large`;
+-   normalización del filename antes de construir el `storage_key`;
+-   formatos admitidos actualmente: `text/plain` (`plaintext`) y
+    `text/markdown` (`markdown`);
+-   formatos no soportados retornan `415 Unsupported Media Type`;
+-   Markdown queda definido como el formato estructurado mínimo para el
+    posterior pipeline OKF;
+-   tests HTTP automáticos para owner ausente, archivo ausente, formato
+    no soportado y archivo mayor de 10 MB;
+-   suite de tests ejecutada satisfactoriamente con las variables de
+    entorno requeridas.
+
+Flujo verificado:
+
+``` text
+POST /documents
+      │
+      ▼
+DocumentHandler
+      │
+      ▼
+DocumentService
+   ┌──┴──────────────┐
+   ▼                 ▼
+ MinIO           PostgreSQL
+ original        Document metadata
+   │                 │
+   └──── storage_key ┘
+
+GET /documents/{id}/download
+      │
+      ├── PostgreSQL: valida id + owner_id
+      ▼
+    MinIO
+      │
+      ▼
+ streaming HTTP
+```
+
+**Elemento temporal:** `X-Test-Owner-ID` se utiliza para identificar al
+propietario mientras se implementa el Milestone 4. Debe ser reemplazado
+por la identidad obtenida del mecanismo de autenticación.
+
+**Decisión de alcance:** PDF, DOCX y EPUB no son necesarios para el
+alcance mínimo. Se mantiene Markdown como formato con estructura
+detectable y texto plano como formato simple soportado.
 
 ## Milestone 6 --- Pipeline OKF
 
@@ -644,9 +719,10 @@ Objetivos detallados en la siguiente sección.
 
 # 9. Deuda técnica y decisiones que NO deben olvidarse
 
-## 9.1 RabbitMQ prefetch / QoS — RESUELTO EN MILESTONE 3
+## 9.1 RabbitMQ prefetch / QoS --- RESUELTO EN MILESTONE 3
 
-Se configuró `prefetch = 1` mediante QoS en el consumer y se verificó con dos jobs consecutivos.
+Se configuró `prefetch = 1` mediante QoS en el consumer y se verificó
+con dos jobs consecutivos.
 
 Con múltiples workers y trabajos largos queremos evitar que un consumer
 acumule demasiados mensajes sin confirmar.
@@ -786,9 +862,10 @@ Se debe verificar especialmente:
 -   comportamiento con dos instancias de API;
 -   rollback ante SQL inválido.
 
-## 9.11 Worker + PostgreSQL — RESUELTO EN MILESTONE 3
+## 9.11 Worker + PostgreSQL --- RESUELTO EN MILESTONE 3
 
-El worker está integrado directamente con PostgreSQL y actualiza los estados de los jobs.
+El worker está integrado directamente con PostgreSQL y actualiza los
+estados de los jobs.
 
 No debe depender de la API para actualizar jobs.
 
@@ -869,21 +946,26 @@ Se agregó validación de `job.JobID == ""` y NACK.
 
 # 11. Próximo paso recomendado
 
-El Milestone 3 está completado. El siguiente bloque de trabajo es:
+Los Milestones 1, 2, 3 y 5 están completados y verificados. El siguiente
+bloque de trabajo es:
 
 ## Milestone 4 --- Autenticación y autorización
 
 Orden recomendado:
 
-1. definir el flujo de registro y login;
-2. implementar password hashing;
-3. definir e implementar JWT/sesión según la arquitectura elegida;
-4. agregar middleware de autenticación;
-5. obtener `owner_id` desde la identidad autenticada, eliminando su envío manual desde `/jobs/test`;
-6. aplicar y probar autorización sobre documentos, jobs y bundles;
-7. verificar explícitamente que conocer un UUID ajeno no permite acceder al recurso ni revela su existencia.
+1.  definir el flujo de registro y login;
+2.  implementar password hashing;
+3.  definir e implementar JWT/sesión según la arquitectura elegida;
+4.  agregar middleware de autenticación;
+5.  obtener `owner_id` desde la identidad autenticada, eliminando su
+    envío manual desde `/jobs/test`;
+6.  aplicar y probar autorización sobre documentos, jobs y bundles;
+7.  verificar explícitamente que conocer un UUID ajeno no permite
+    acceder al recurso ni revela su existencia.
 
-Antes de reemplazar `/jobs/test`, conservar el flujo ya verificado `CreateJob → RabbitMQ → Worker → PostgreSQL` como referencia de integración.
+Antes de reemplazar `/jobs/test`, conservar el flujo ya verificado
+`CreateJob → RabbitMQ → Worker → PostgreSQL` como referencia de
+integración.
 
 ------------------------------------------------------------------------
 
@@ -918,13 +1000,14 @@ Usar este texto junto con este archivo:
 
 > Estoy desarrollando la Plataforma OKF Cloud descrita en
 > `PROJECT_STATUS.md`. Continúa desde el estado documentado. Los
-> Milestones 1 y 2 están terminados. El PR #1 ya agregó una capa
-> PostgreSQL con migraciones y repositories, por lo que el siguiente
-> trabajo es verificarla e integrarla con el flujo RabbitMQ existente.
-> Quiero avanzar paso a paso y verificar cada cambio. No tengo mucha
-> experiencia con Go, así que explica los conceptos del lenguaje cuando
-> aparezcan. Mantén buenas prácticas de arquitectura sin sobrecomplicar
-> prematuramente el proyecto.
+> Milestones 1, 2, 3 y 5 están completados y verificados. El siguiente
+> trabajo es el Milestone 4: autenticación y autorización. Actualmente
+> los endpoints de documentos usan temporalmente `X-Test-Owner-ID`; debe
+> reemplazarse por la identidad autenticada. Quiero avanzar paso a paso
+> y verificar cada cambio. No tengo mucha experiencia con Go, así que
+> explica los conceptos del lenguaje cuando aparezcan. Mantén buenas
+> prácticas de arquitectura sin sobrecomplicar prematuramente el
+> proyecto.
 
 ------------------------------------------------------------------------
 
@@ -935,12 +1018,14 @@ Infraestructura Docker          ██████████  completa
 RabbitMQ async flow             ██████████  completo
 Robustez básica RabbitMQ        ██████████  completa para startup
 Capa PostgreSQL                 ██████████  completa e integrada
-Autenticación                   ░░░░░░░░░░  pendiente
-MinIO funcional                 ░░░░░░░░░░  pendiente
+Autenticación/autorización      ░░░░░░░░░░  siguiente milestone
+Documentos + MinIO              ██████████  completo y verificado
 Pipeline OKF                    ░░░░░░░░░░  pendiente
 Confiabilidad avanzada          ████░░░░░░  prefetch/ACK listos; faltan retry/DLQ/idempotencia
 Frontend funcional              ░░░░░░░░░░  pendiente
 Observabilidad/pruebas finales  ░░░░░░░░░░  pendiente
 ```
 
-**Siguiente acción:** iniciar el Milestone 4 --- autenticación y autorización, manteniendo el desarrollo incremental y las pruebas verificables.
+**Siguiente acción:** iniciar el Milestone 4 --- autenticación y
+autorización, manteniendo el desarrollo incremental y las pruebas
+verificables.

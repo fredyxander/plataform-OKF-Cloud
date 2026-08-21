@@ -1,6 +1,7 @@
 package database
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -45,5 +46,37 @@ func TestCreateAndGetUser(t *testing.T) {
 
 	if found.Email != email {
 		t.Fatalf("expected email %s, got %s", email, found.Email)
+	}
+}
+
+func TestCreateUserDuplicateEmail(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Fatal("DATABASE_URL is required")
+	}
+
+	db, err := New(dsn)
+	if err != nil {
+		t.Fatalf("connect to database: %v", err)
+	}
+	defer db.Close()
+
+	email := fmt.Sprintf(
+		"duplicate-user-%d@example.com",
+		time.Now().UnixNano(),
+	)
+
+	_, err = db.CreateUser(email, "fake-hash-1")
+	if err != nil {
+		t.Fatalf("create first user: %v", err)
+	}
+
+	_, err = db.CreateUser(email, "fake-hash-2")
+
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf(
+			"expected ErrAlreadyExists, got %v",
+			err,
+		)
 	}
 }

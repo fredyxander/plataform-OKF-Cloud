@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/fredyxander/okf-platform/backend/internal/application"
+	"github.com/fredyxander/okf-platform/backend/internal/auth"
 	"github.com/fredyxander/okf-platform/backend/internal/config"
 	"github.com/fredyxander/okf-platform/backend/internal/database"
 	"github.com/fredyxander/okf-platform/backend/internal/domain"
@@ -93,7 +94,23 @@ func main() {
 
 	log.Println("MinIO connected and bucket ready")
 
-	//servicio y handler de documentos
+	//servicios y handlers
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET is not set")
+	}
+
+	tokenManager := auth.NewTokenManager(
+		jwtSecret,
+		24*time.Hour,
+	)
+
+	authService := application.NewAuthService(
+		db,
+		tokenManager,
+	)
+	authHandler := httpapi.NewAuthHandler(authService)
+
 	documentService := application.NewDocumentService(
 		db,
 		minioStorage,
@@ -111,6 +128,9 @@ func main() {
 			"status": "ok",
 		})
 	})
+
+	http.HandleFunc("/auth/register", authHandler.Register)
+	http.HandleFunc("/auth/login", authHandler.Login)
 
 	http.HandleFunc("/documents", documentHandler.Upload)
 

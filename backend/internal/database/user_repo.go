@@ -5,10 +5,15 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/lib/pq"
+
 	"github.com/fredyxander/okf-platform/backend/internal/domain"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound      = errors.New("not found")
+	ErrAlreadyExists = errors.New("already exists")
+)
 
 func (db *DB) CreateUser(email, passwordHash string) (*domain.User, error) {
 	u := &domain.User{}
@@ -19,6 +24,12 @@ func (db *DB) CreateUser(email, passwordHash string) (*domain.User, error) {
 		email, passwordHash,
 	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
 	if err != nil {
+		var pqErr *pq.Error
+
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return nil, ErrAlreadyExists
+		}
+
 		return nil, fmt.Errorf("create user: %w", err)
 	}
 	return u, nil
