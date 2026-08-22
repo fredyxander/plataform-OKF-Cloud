@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -133,25 +134,18 @@ func main() {
 	http.HandleFunc("/auth/login", authHandler.Login)
 
 	// ENDPOINTS PROTEGIDOS
-	http.HandleFunc(
-		"/documents",
+	http.HandleFunc("POST /documents",
 		httpapi.AuthMiddleware(tokenManager, documentHandler.Upload),
 	)
 
-	http.HandleFunc(
-		"GET /documents/{id}/download",
+	http.HandleFunc("GET /documents/{id}/download",
 		httpapi.AuthMiddleware(tokenManager, documentHandler.Download),
 	)
 
-	http.HandleFunc("/jobs/test",
+	http.HandleFunc("POST /jobs",
 		httpapi.AuthMiddleware(
 			tokenManager,
 			func(w http.ResponseWriter, r *http.Request) {
-
-				if r.Method != http.MethodPost {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-					return
-				}
 
 				var req struct {
 					DocumentID string `json:"documentId"`
@@ -210,7 +204,68 @@ func main() {
 					"status": "queued",
 				})
 			}),
-		)
+	)
+
+	http.HandleFunc("GET /jobs",
+		httpapi.AuthMiddleware(
+			tokenManager,
+			func(w http.ResponseWriter, r *http.Request) {
+				ownerID, ok := httpapi.UserIDFromContext(r.Context())
+				if !ok {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+
+				jobs, err := db.ListJobsByOwner(ownerID)
+				if err != nil {
+					http.Error(w, "could not list jobs", http.StatusInternalServerError)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+
+				if err := json.NewEncoder(w).Encode(jobs); err != nil {
+					return
+				}
+			},
+		),
+	)
+
+	http.HandleFunc("GET /jobs/{id}",
+		httpapi.AuthMiddleware(
+			tokenManager,
+			func(w http.ResponseWriter, r *http.Request) {
+				ownerID, ok := httpapi.UserIDFromContext(r.Context())
+				if !ok {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+
+				jobID := r.PathValue("id")
+				if jobID == "" {
+					http.Error(w, "job id is required", http.StatusBadRequest)
+					return
+				}
+
+				job, err := db.GetJobByID(jobID, ownerID)
+				if err != nil {
+					if errors.Is(err, database.ErrNotFound) {
+						http.Error(w, "job not found", http.StatusNotFound)
+						return
+					}
+
+					http.Error(w, "could not get job", http.StatusInternalServerError)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+
+				if err := json.NewEncoder(w).Encode(job); err != nil {
+					return
+				}
+			},
+		),
+	)
 
 	//http server
 	fmt.Println("API listening on :8080")

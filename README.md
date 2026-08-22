@@ -467,7 +467,7 @@ The project will progressively implement:
 ### Milestone 2 — Asynchronous communication ✅
 
 ```text
-POST /jobs/test
+POST /jobs
        ↓
      Go API
        ↓
@@ -476,14 +476,14 @@ POST /jobs/test
     Go Worker
 ```
 
-### Milestone 3 — Persistence
+### Milestone 3 — Persistence ✅
 
 - Database migrations.
 - Domain entities.
 - Repository layer.
 - Job persistence.
 
-### Milestone 4 — Authentication
+### Milestone 4 — Authentication ✅
 
 - User registration.
 - Password hashing.

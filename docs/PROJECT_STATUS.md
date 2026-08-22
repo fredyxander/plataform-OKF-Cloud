@@ -78,6 +78,8 @@ API y workers.
 -   **Driver PostgreSQL en Go:** `github.com/lib/pq`.
 -   **Cliente RabbitMQ:** `github.com/rabbitmq/amqp091-go`.
 -   **UUID:** `github.com/google/uuid`.
+-   **Password hashing:** `golang.org/x/crypto/bcrypt`.
+-   **JWT:** `github.com/golang-jwt/jwt/v5`.
 
 ------------------------------------------------------------------------
 
@@ -92,6 +94,12 @@ okf-project/
 │   │   └── worker/
 │   │       └── main.go
 │   ├── internal/
+│   │   ├── application/
+│   │   │   ├── auth_service.go
+│   │   │   └── document_service.go
+│   │   ├── auth/
+│   │   │   ├── password.go
+│   │   │   └── token.go
 │   │   ├── config/
 │   │   ├── database/
 │   │   │   ├── db.go
@@ -101,6 +109,10 @@ okf-project/
 │   │   │   ├── job_repo.go
 │   │   │   └── bundle_repo.go
 │   │   ├── domain/
+│   │   ├── http/
+│   │   │   ├── auth_handler.go
+│   │   │   ├── auth_middleware.go
+│   │   │   └── document_handler.go
 │   │   ├── queue/
 │   │   └── storage/
 │   ├── migrations/
@@ -190,7 +202,7 @@ Se comprobó:
 Se implementó el primer flujo asíncrono funcional:
 
 ``` text
-POST /jobs/test
+POST /jobs  (antes `/jobs/test`; reemplazado en M4)
       │
       ▼
     Go API
@@ -229,7 +241,8 @@ mediante `json.Unmarshal`.
 
 La API funciona como producer:
 
-1.  recibe `POST /jobs/test`;
+1.  originalmente recibía `POST /jobs/test`; desde el Milestone 4 el
+    endpoint definitivo es `POST /jobs`;
 2.  originalmente generaba un UUID aislado (comportamiento del Milestone
     2);
 3.  construye `JobMessage`;
@@ -550,7 +563,7 @@ Resultados principales:
 Flujo actualmente verificado:
 
 ``` text
-POST /jobs/test
+POST /jobs
    │
    ▼
 API
@@ -574,24 +587,247 @@ API
 El camino `FAILED + error_message` también fue probado, pero el error
 simulado usado para verificarlo fue retirado después de la prueba.
 
-**Elementos todavía temporales:** `/jobs/test`, recepción manual de
-`ownerId`/`documentId` y `time.Sleep(10 * time.Second)` como simulación
-del procesamiento real.
+**Actualización posterior (Milestone 4):** `/jobs/test` fue eliminado y
+reemplazado por `POST /jobs`. El `ownerId` ya no se recibe desde el
+cliente: se obtiene de la identidad autenticada mediante JWT.
+`documentId` continúa siendo parte legítima del request para indicar qué
+documento propio debe procesarse. La API valida `documentId + owner_id`
+antes de crear el Job.
+
+**Elemento todavía temporal:** `time.Sleep(10 * time.Second)` continúa
+como simulación del procesamiento real y debe retirarse al implementar
+el pipeline OKF.
 
 ## Milestone 4 --- Autenticación y autorización
 
-**PENDIENTE**, aunque `users` y `owner_id` ya preparan parte de la
-persistencia.
+**COMPLETADO Y VERIFICADO.**
 
-Objetivos:
+Se implementó autenticación stateless mediante JWT y autorización por
+propietario para los recursos funcionales actuales: documentos y jobs.
 
--   registro;
--   password hashing;
--   login;
--   JWT/sesión definida por arquitectura;
--   middleware de autenticación;
--   aislamiento por owner;
--   autorización de documentos/jobs/bundles.
+Resultados principales:
+
+-   registro de usuarios mediante `POST /auth/register`;
+-   contraseñas almacenadas exclusivamente como hashes bcrypt;
+-   email normalizado y restricción de email único;
+-   emails duplicados traducidos a `409 Conflict`;
+-   login mediante `POST /auth/login`;
+-   credenciales inválidas retornan `401 Unauthorized` sin distinguir
+    entre email inexistente y contraseña incorrecta;
+-   generación de JWT firmado con HS256;
+-   claims con `user_id`, `sub`, `iat` y `exp`;
+-   validación explícita del algoritmo HS256, firma y expiración;
+-   `JWT_SECRET` suministrado mediante variable de entorno;
+-   `AuthMiddleware` implementado para procesar
+    `Authorization: Bearer <token>`;
+-   identidad autenticada propagada mediante `context.Context`;
+-   `UserIDFromContext(...)` utilizado por handlers protegidos;
+-   `X-Test-Owner-ID` eliminado completamente;
+-   `ownerId` controlado por el cliente eliminado del flujo de jobs;
+-   `/jobs/test` eliminado y reemplazado por rutas REST definitivas;
+-   autorización por `owner_id` verificada tanto para documentos como
+    jobs;
+-   acceso a recursos ajenos retorna `404`, evitando revelar su
+    existencia;
+-   requests a recursos protegidos sin JWT retornan `401`;
+-   suite `go test ./...` ejecutada satisfactoriamente después de los
+    cambios;
+-   flujo asíncrono `API → RabbitMQ → Worker → PostgreSQL` revalidado
+    después de integrar autenticación y autorización.
+
+### Endpoints de autenticación
+
+``` text
+POST /auth/register
+POST /auth/login
+```
+
+El login responde conceptualmente:
+
+``` json
+{
+  "token": "<jwt>",
+  "user": {
+    "id": "<uuid>",
+    "email": "user@example.com",
+    "created_at": "..."
+  }
+}
+```
+
+`PasswordHash` utiliza `json:"-"`, por lo que no se expone en respuestas
+HTTP.
+
+### Flujo de autenticación
+
+``` text
+POST /auth/login
+      │
+      ▼
+ AuthHandler
+      │
+      ▼
+ AuthService
+      │
+      ├── GetUserByEmail
+      ├── bcrypt password check
+      └── TokenManager.Generate
+                    │
+                    ▼
+                   JWT
+```
+
+Para endpoints protegidos:
+
+``` text
+Authorization: Bearer <JWT>
+          │
+          ▼
+    AuthMiddleware
+          │
+          ├── valida firma/expiración
+          ▼
+ userID en context.Context
+          │
+          ▼
+       Handler
+          │
+          ▼
+consulta/operación filtrada por owner_id
+```
+
+### Documentos autenticados
+
+Rutas actuales:
+
+``` text
+POST /documents
+GET  /documents/{id}/download
+```
+
+El owner ya no llega mediante headers de prueba. Se obtiene
+exclusivamente desde el JWT/contexto.
+
+Se verificó end-to-end:
+
+``` text
+JWT válido + documento propio  → operación permitida
+sin JWT                        → 401
+X-Test-Owner-ID sin JWT        → 401
+documento de otro usuario      → 404
+```
+
+### Jobs autenticados
+
+Rutas actuales:
+
+``` text
+POST /jobs
+GET  /jobs
+GET  /jobs/{id}
+```
+
+`POST /jobs` recibe únicamente el `documentId` necesario para indicar el
+documento a procesar. El `ownerID` se obtiene del contexto autenticado.
+
+Antes de crear el Job, la API valida:
+
+``` text
+GetDocumentByID(documentID, authenticatedOwnerID)
+```
+
+Por tanto, conocer el UUID de un documento ajeno no permite crear un Job
+sobre él.
+
+Se verificó manualmente:
+
+``` text
+user1 + documento de user1 → 202 Accepted
+user1 + documento de user2 → 404 Not Found
+```
+
+Después de un caso autorizado se volvió a verificar:
+
+``` text
+POST /jobs
+   ↓
+QUEUED
+   ↓
+RabbitMQ
+   ↓
+Worker → PROCESSING
+   ↓
+COMPLETED
+```
+
+El worker completó correctamente el Job, confirmando que M4 no rompió el
+flujo asíncrono existente.
+
+`GET /jobs` utiliza `ListJobsByOwner(authenticatedOwnerID)` y solo
+retorna los jobs del usuario autenticado.
+
+`GET /jobs/{id}` utiliza `GetJobByID(id, authenticatedOwnerID)`. Se
+verificó:
+
+``` text
+job propio + JWT válido → 200
+job ajeno + JWT válido  → 404
+sin JWT                 → 401
+```
+
+### Tests agregados/verificados en M4
+
+Se cubrieron, entre otros:
+
+-   hash y verificación de contraseña;
+-   contraseña incorrecta;
+-   generación de JWT;
+-   validación de JWT;
+-   rechazo de token firmado con secret diferente;
+-   registro correcto;
+-   normalización de email;
+-   email duplicado;
+-   email vacío;
+-   contraseña menor de 8 caracteres;
+-   login correcto;
+-   login con contraseña incorrecta;
+-   login con usuario inexistente;
+-   middleware con token válido;
+-   middleware sin token;
+-   middleware con token inválido;
+-   adaptación de tests HTTP de documentos al nuevo contexto
+    autenticado.
+
+### Bundles y autorización
+
+La autorización HTTP de bundles **no se implementó dentro de M4** porque
+el flujo funcional de bundles todavía pertenece al Milestone 6.
+
+Cuando se implementen sus endpoints deben seguir obligatoriamente el
+mismo patrón:
+
+``` text
+JWT → authenticated ownerID → consulta por recurso + owner_id → 404 si es ajeno
+```
+
+`ownerId` nunca debe aceptarse como identidad suministrada por el
+cliente.
+
+### Deuda técnica no bloqueante identificada durante M4
+
+-   varios handlers de jobs permanecen inline en `cmd/api/main.go`;
+    conviene extraer posteriormente `JobHandler` y, cuando aporte valor,
+    `JobService`;
+-   `application` conoce actualmente errores definidos en `database`
+    (`ErrNotFound` / `ErrAlreadyExists`); puede desacoplarse mediante
+    errores de aplicación/repositorio compartidos;
+-   configuración de RabbitMQ está centralizada en `internal/config`,
+    mientras PostgreSQL, MinIO y JWT todavía se leen parcialmente desde
+    `main.go`;
+-   varias pruebas end-to-end de autorización se verificaron manualmente
+    y conviene automatizarlas antes del cierre;
+-   autorización de bundles queda pendiente hasta implementar el flujo
+    de bundles en el Milestone 6.
 
 ## Milestone 5 --- Documentos + MinIO
 
@@ -659,9 +895,10 @@ GET /documents/{id}/download
  streaming HTTP
 ```
 
-**Elemento temporal:** `X-Test-Owner-ID` se utiliza para identificar al
-propietario mientras se implementa el Milestone 4. Debe ser reemplazado
-por la identidad obtenida del mecanismo de autenticación.
+**Actualización posterior (Milestone 4):** `X-Test-Owner-ID` fue
+eliminado. Los endpoints de documentos están protegidos por JWT y
+obtienen el `owner_id` desde `context.Context` después de pasar por
+`AuthMiddleware`.
 
 **Decisión de alcance:** PDF, DOCX y EPUB no son necesarios para el
 alcance mínimo. Se mantiene Markdown como formato con estructura
@@ -896,6 +1133,21 @@ Diferenciar cuando sea útil:
 
 ------------------------------------------------------------------------
 
+## 9.13 Autenticación/autorización --- BASE RESUELTA EN MILESTONE 4
+
+Registro, login, bcrypt, JWT, middleware y aislamiento por owner están
+implementados para documentos y jobs.
+
+Pendientes no bloqueantes:
+
+-   automatizar más pruebas HTTP end-to-end de aislamiento multiusuario;
+-   centralizar `JWT_SECRET`, PostgreSQL y MinIO en la capa de
+    configuración;
+-   desacoplar errores de aplicación respecto de `internal/database`;
+-   extraer handlers de jobs actualmente inline en `cmd/api/main.go`;
+-   aplicar autorización a bundles cuando sus endpoints se implementen
+    en M6.
+
 # 10. Problemas ya encontrados y solucionados
 
 ## Vite / Rolldown en Windows
@@ -946,26 +1198,32 @@ Se agregó validación de `job.JobID == ""` y NACK.
 
 # 11. Próximo paso recomendado
 
-Los Milestones 1, 2, 3 y 5 están completados y verificados. El siguiente
-bloque de trabajo es:
+Los Milestones 1, 2, 3, 4 y 5 están completados y verificados.
 
-## Milestone 4 --- Autenticación y autorización
+El siguiente bloque funcional recomendado es:
 
-Orden recomendado:
+## Milestone 6 --- Pipeline OKF
 
-1.  definir el flujo de registro y login;
-2.  implementar password hashing;
-3.  definir e implementar JWT/sesión según la arquitectura elegida;
-4.  agregar middleware de autenticación;
-5.  obtener `owner_id` desde la identidad autenticada, eliminando su
-    envío manual desde `/jobs/test`;
-6.  aplicar y probar autorización sobre documentos, jobs y bundles;
-7.  verificar explícitamente que conocer un UUID ajeno no permite
-    acceder al recurso ni revela su existencia.
+Orden sugerido:
 
-Antes de reemplazar `/jobs/test`, conservar el flujo ya verificado
-`CreateJob → RabbitMQ → Worker → PostgreSQL` como referencia de
-integración.
+1.  reemplazar el procesamiento temporal (`time.Sleep`) por
+    procesamiento real;
+2.  hacer que el worker obtenga el documento original desde MinIO;
+3.  generar la estructura mínima del bundle OKF, comenzando por
+    `index.md`;
+4.  generar `log.md` y estructura de conceptos/secciones según el
+    alcance;
+5.  validar el bundle antes de marcar el Job como completado;
+6.  almacenar el bundle generado en MinIO;
+7.  crear/persistir el registro `Bundle` en PostgreSQL;
+8.  implementar los endpoints necesarios para consultar/descargar
+    bundles;
+9.  aplicar a bundles el patrón de autorización de M4 (`owner_id` desde
+    JWT);
+10. verificar end-to-end `documento → job → worker → bundle`.
+
+No mezclar todavía M7 (retry/DLQ/idempotencia avanzada) salvo que una
+necesidad concreta del pipeline obligue a resolver una parte antes.
 
 ------------------------------------------------------------------------
 
@@ -1000,14 +1258,15 @@ Usar este texto junto con este archivo:
 
 > Estoy desarrollando la Plataforma OKF Cloud descrita en
 > `PROJECT_STATUS.md`. Continúa desde el estado documentado. Los
-> Milestones 1, 2, 3 y 5 están completados y verificados. El siguiente
-> trabajo es el Milestone 4: autenticación y autorización. Actualmente
-> los endpoints de documentos usan temporalmente `X-Test-Owner-ID`; debe
-> reemplazarse por la identidad autenticada. Quiero avanzar paso a paso
-> y verificar cada cambio. No tengo mucha experiencia con Go, así que
-> explica los conceptos del lenguaje cuando aparezcan. Mantén buenas
-> prácticas de arquitectura sin sobrecomplicar prematuramente el
-> proyecto.
+> Milestones 1, 2, 3, 4 y 5 están completados y verificados. M4
+> implementó registro, bcrypt, login, JWT, middleware y autorización por
+> `owner_id` para documentos y jobs. `X-Test-Owner-ID` y `/jobs/test`
+> fueron eliminados. Los endpoints actuales de jobs son `POST /jobs`,
+> `GET /jobs` y `GET /jobs/{id}`. El siguiente trabajo recomendado es el
+> Milestone 6: pipeline OKF y generación de bundles. La autorización
+> HTTP de bundles debe implementarse cuando exista ese flujo. Quiero
+> avanzar paso a paso y verificar cada cambio. Mantén buenas prácticas
+> de arquitectura sin sobrecomplicar prematuramente el proyecto.
 
 ------------------------------------------------------------------------
 
@@ -1018,14 +1277,14 @@ Infraestructura Docker          ██████████  completa
 RabbitMQ async flow             ██████████  completo
 Robustez básica RabbitMQ        ██████████  completa para startup
 Capa PostgreSQL                 ██████████  completa e integrada
-Autenticación/autorización      ░░░░░░░░░░  siguiente milestone
+Autenticación/autorización      ██████████  completa para documentos/jobs
 Documentos + MinIO              ██████████  completo y verificado
-Pipeline OKF                    ░░░░░░░░░░  pendiente
+Pipeline OKF                    ░░░░░░░░░░  siguiente milestone
 Confiabilidad avanzada          ████░░░░░░  prefetch/ACK listos; faltan retry/DLQ/idempotencia
 Frontend funcional              ░░░░░░░░░░  pendiente
 Observabilidad/pruebas finales  ░░░░░░░░░░  pendiente
 ```
 
-**Siguiente acción:** iniciar el Milestone 4 --- autenticación y
-autorización, manteniendo el desarrollo incremental y las pruebas
-verificables.
+**Siguiente acción:** iniciar el Milestone 6 --- pipeline OKF,
+manteniendo el desarrollo incremental y las pruebas verificables. La
+autorización de bundles se completa cuando se implementen sus endpoints.
