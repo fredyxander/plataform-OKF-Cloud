@@ -374,6 +374,35 @@ func main() {
 			bundle.ConceptCount,
 		)
 
+		bundleZIP, err := okf.PackageBundle(bundle)
+		if err != nil {
+			errMsg := err.Error()
+
+			log.Printf(
+				"could not package bundle for job %s: %v",
+				persistedJob.ID,
+				err,
+			)
+
+			if updateErr := db.UpdateJobStatus(
+				job.JobID,
+				domain.JobStatusFailed,
+				&errMsg,
+			); updateErr != nil {
+				log.Printf(
+					"could not update job %s to failed: %v",
+					job.JobID,
+					updateErr,
+				)
+			}
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
 		bundlePrefix := fmt.Sprintf(
 			"bundles/%s/%s",
 			persistedJob.OwnerID,
@@ -436,10 +465,55 @@ func main() {
 			bundlePrefix,
 		)
 
+		bundleZIPKey := fmt.Sprintf(
+			"%s/bundle.zip",
+			bundlePrefix,
+		)
+
+		if err := minioStorage.PutObject(
+			context.Background(),
+			bundleZIPKey,
+			bytes.NewReader(bundleZIP),
+			int64(len(bundleZIP)),
+			"application/zip",
+		); err != nil {
+			errMsg := err.Error()
+
+			log.Printf(
+				"could not store bundle zip for job %s: %v",
+				persistedJob.ID,
+				err,
+			)
+
+			if updateErr := db.UpdateJobStatus(
+				job.JobID,
+				domain.JobStatusFailed,
+				&errMsg,
+			); updateErr != nil {
+				log.Printf(
+					"could not update job %s to failed: %v",
+					job.JobID,
+					updateErr,
+				)
+			}
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
+		log.Printf(
+			"bundle zip stored in MinIO for job %s: key=%s",
+			persistedJob.ID,
+			bundleZIPKey,
+		)
+
 		persistedBundle, err := db.CreateBundle(
 			persistedJob.ID,
 			persistedJob.OwnerID,
-			bundlePrefix,
+			bundleZIPKey,
 			true,
 			bundle.ConceptCount,
 		)

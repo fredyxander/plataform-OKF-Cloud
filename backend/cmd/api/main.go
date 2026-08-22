@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -121,6 +120,13 @@ func main() {
 		documentService,
 	)
 
+	bundleHandler := httpapi.NewBundleHandler(
+		db,
+		minioStorage,
+	)
+
+	jobHandler := httpapi.NewJobHandler(db)
+
 	//endpoints
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -234,36 +240,14 @@ func main() {
 	http.HandleFunc("GET /jobs/{id}",
 		httpapi.AuthMiddleware(
 			tokenManager,
-			func(w http.ResponseWriter, r *http.Request) {
-				ownerID, ok := httpapi.UserIDFromContext(r.Context())
-				if !ok {
-					http.Error(w, "unauthorized", http.StatusUnauthorized)
-					return
-				}
+			jobHandler.Get,
+		),
+	)
 
-				jobID := r.PathValue("id")
-				if jobID == "" {
-					http.Error(w, "job id is required", http.StatusBadRequest)
-					return
-				}
-
-				job, err := db.GetJobByID(jobID, ownerID)
-				if err != nil {
-					if errors.Is(err, database.ErrNotFound) {
-						http.Error(w, "job not found", http.StatusNotFound)
-						return
-					}
-
-					http.Error(w, "could not get job", http.StatusInternalServerError)
-					return
-				}
-
-				w.Header().Set("Content-Type", "application/json")
-
-				if err := json.NewEncoder(w).Encode(job); err != nil {
-					return
-				}
-			},
+	http.HandleFunc("GET /jobs/{id}/bundle",
+		httpapi.AuthMiddleware(
+			tokenManager,
+			bundleHandler.Download,
 		),
 	)
 
