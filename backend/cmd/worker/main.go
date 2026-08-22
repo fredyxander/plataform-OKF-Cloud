@@ -169,6 +169,26 @@ func main() {
 			persistedJob.Status,
 		)
 
+		// Idempotencia ante redelivery:
+		// si RabbitMQ vuelve a entregar un Job que ya terminó correctamente,
+		// no ejecutamos nuevamente el pipeline.
+		if persistedJob.Status == domain.JobStatusCompleted {
+			log.Printf(
+				"job %s already completed; acknowledging duplicate delivery",
+				persistedJob.ID,
+			)
+
+			if ackErr := message.Ack(false); ackErr != nil {//job completo elimina mensaje duplicado de la cola -evitar redelivery.
+				log.Printf(
+					"could not acknowledge already completed job %s: %v",
+					persistedJob.ID,
+					ackErr,
+				)
+			}
+
+			continue
+		}
+
 		document, err := db.GetDocumentByID(
 			persistedJob.DocumentID,
 			persistedJob.OwnerID,
