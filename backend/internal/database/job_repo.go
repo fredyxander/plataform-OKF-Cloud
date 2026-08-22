@@ -180,3 +180,31 @@ func (db *DB) ClaimJobForProcessing(
 
 	return j, nil
 }
+
+func (db *DB) RequeueJob(id string, errorMessage *string) error {
+	result, err := db.conn.Exec(`
+		UPDATE jobs
+		SET status = $1,
+		    error_message = $2
+		WHERE id = $3
+		  AND status = $4`,
+		domain.JobStatusQueued,
+		errorMessage,
+		id,
+		domain.JobStatusProcessing,
+	)
+	if err != nil {
+		return fmt.Errorf("requeue job: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get requeue job rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return ErrJobNotClaimable
+	}
+
+	return nil
+}

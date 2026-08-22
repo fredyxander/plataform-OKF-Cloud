@@ -302,3 +302,122 @@ func TestClaimJobForProcessingRecoversStaleJob(t *testing.T) {
 		)
 	}
 }
+
+func TestRequeueJobFromProcessing(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	user, err := db.CreateUser(
+		fmt.Sprintf("requeue-job-%d@example.com", time.Now().UnixNano()),
+		"fake-hash-for-test",
+	)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	document, err := db.CreateDocument(
+		user.ID,
+		"requeue-test.txt",
+		fmt.Sprintf("documents/%d/requeue-test.txt", time.Now().UnixNano()),
+		"plaintext",
+		100,
+	)
+	if err != nil {
+		t.Fatalf("create document: %v", err)
+	}
+
+	job, err := db.CreateJob(
+		document.ID,
+		user.ID,
+		fmt.Sprintf("requeue-%d", time.Now().UnixNano()),
+	)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	// queued -> processing
+	_, err = db.ClaimJobForProcessing(
+		job.ID,
+		time.Now().Add(-5*time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+
+	errorMessage := "temporary storage failure"
+
+	// processing -> queued
+	if err := db.RequeueJob(job.ID, &errorMessage); err != nil {
+		t.Fatalf("requeue job: %v", err)
+	}
+
+	requeuedJob, err := db.GetJobByIDForProcessing(job.ID)
+	if err != nil {
+		t.Fatalf("get requeued job: %v", err)
+	}
+
+	if requeuedJob.Status != domain.JobStatusQueued {
+		t.Fatalf(
+			"expected status %s, got %s",
+			domain.JobStatusQueued,
+			requeuedJob.Status,
+		)
+	}
+
+	if requeuedJob.ErrorMessage == nil {
+		t.Fatal("expected error message to be persisted")
+	}
+
+	if *requeuedJob.ErrorMessage != errorMessage {
+		t.Fatalf(
+			"expected error message %q, got %q",
+			errorMessage,
+			*requeuedJob.ErrorMessage,
+		)
+	}
+}
+
+func TestRequeueJobRejectsNonProcessingJob(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	user, err := db.CreateUser(
+		fmt.Sprintf("requeue-reject-%d@example.com", time.Now().UnixNano()),
+		"fake-hash-for-test",
+	)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	document, err := db.CreateDocument(
+		user.ID,
+		"requeue-reject.txt",
+		fmt.Sprintf("documents/%d/requeue-reject.txt", time.Now().UnixNano()),
+		"plaintext",
+		100,
+	)
+	if err != nil {
+		t.Fatalf("create document: %v", err)
+	}
+
+	job, err := db.CreateJob(
+		document.ID,
+		user.ID,
+		fmt.Sprintf("requeue-reject-%d", time.Now().UnixNano()),
+	)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	// El Job sigue QUEUED.
+	errorMessage := "should not be requeued"
+
+	err = db.RequeueJob(job.ID, &errorMessage)
+
+	if !errors.Is(err, ErrJobNotClaimable) {
+		t.Fatalf(
+			"expected ErrJobNotClaimable, got %v",
+			err,
+		)
+	}
+}

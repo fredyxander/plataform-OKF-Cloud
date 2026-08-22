@@ -12,7 +12,11 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-const JobsQueue = "document_jobs"
+const (
+	JobsQueue      = "document_jobs"
+	JobsRetryQueue = "document_jobs_retry"
+	JobsDLQ        = "document_jobs_dlq"
+)
 
 // RabbitMQ representa nuestra conexión con el broker.
 type RabbitMQ struct {
@@ -36,6 +40,7 @@ func NewRabbitMQ(url string) (*RabbitMQ, error) {
 		return nil, fmt.Errorf("open RabbitMQ channel: %w", err)
 	}
 
+	// Cola principal de procesamiento.
 	_, err = channel.QueueDeclare(
 		JobsQueue,
 		true,
@@ -50,6 +55,45 @@ func NewRabbitMQ(url string) (*RabbitMQ, error) {
 		connection.Close()
 
 		return nil, fmt.Errorf("declare queue: %w", err)
+	}
+
+	// Cola de retry diferido.
+	// Los mensajes permanecen aquí 30 segundos y, al expirar,
+	// RabbitMQ los devuelve automáticamente a JobsQueue.
+	_, err = channel.QueueDeclare(
+		JobsRetryQueue,
+		true,  // durable
+		false, // auto-delete
+		false, // exclusive
+		false, // no-wait
+		amqp.Table{
+			"x-message-ttl":             int32(30000),
+			"x-dead-letter-exchange":    "",
+			"x-dead-letter-routing-key": JobsQueue,
+		},
+	)
+
+	if err != nil {
+		channel.Close()
+		connection.Close()
+
+		return nil, fmt.Errorf("declare retry queue: %w", err)
+	}
+
+	_, err = channel.QueueDeclare(
+		JobsDLQ,
+		true,  // durable
+		false, // auto-delete
+		false, // exclusive
+		false, // no-wait
+		nil,
+	)
+
+	if err != nil {
+		channel.Close()
+		connection.Close()
+
+		return nil, fmt.Errorf("declare DLQ: %w", err)
 	}
 
 	return &RabbitMQ{
@@ -170,4 +214,93 @@ func NewRabbitMQWithRetry(
 		maxRetries,
 		lastErr,
 	)
+}
+
+func (r *RabbitMQ) PublishJobRetry(
+	ctx context.Context,
+	job domain.JobMessage,
+) error {
+	job.Attempt++
+
+	body, err := json.Marshal(job)
+	if err != nil {
+		return fmt.Errorf("encode retry job message: %w", err)
+	}
+
+	err = r.channel.PublishWithContext(
+		ctx,
+		"",
+		JobsRetryQueue,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			DeliveryMode: amqp.Persistent,
+			Body:         body,
+		},
+	)
+
+	if err != nil {
+		return fmt.Errorf("publish retry job: %w", err)
+	}
+
+	return nil
+}
+
+func (r *RabbitMQ) PublishJobDLQ(
+	ctx context.Context,
+	job domain.JobMessage,
+) error {
+	body, err := json.Marshal(job)
+	if err != nil {
+		return fmt.Errorf("encode DLQ job message: %w", err)
+	}
+
+	err = r.channel.PublishWithContext(
+		ctx,
+		"",
+		JobsDLQ,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			DeliveryMode: amqp.Persistent,
+			Body:         body,
+		},
+	)
+
+	if err != nil {
+		return fmt.Errorf("publish job to DLQ: %w", err)
+	}
+
+	return nil
+}
+
+func (r *RabbitMQ) PublishJobDeferred(
+	ctx context.Context,
+	job domain.JobMessage,
+) error {
+	body, err := json.Marshal(job)
+	if err != nil {
+		return fmt.Errorf("encode deferred job message: %w", err)
+	}
+
+	err = r.channel.PublishWithContext(
+		ctx,
+		"",
+		JobsRetryQueue,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			DeliveryMode: amqp.Persistent,
+			Body:         body,
+		},
+	)
+
+	if err != nil {
+		return fmt.Errorf("publish deferred job: %w", err)
+	}
+
+	return nil
 }

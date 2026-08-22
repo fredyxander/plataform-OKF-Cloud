@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,74 @@ import (
 	"github.com/fredyxander/okf-platform/backend/internal/queue"
 	"github.com/fredyxander/okf-platform/backend/internal/storage"
 )
+
+const maxJobRetries = 3
+var errJobRetryLimitReached = errors.New("job retry limit reached")
+
+func retryJob(
+	ctx context.Context,
+	db *database.DB,
+	rabbitMQ *queue.RabbitMQ,
+	job domain.JobMessage,
+	failure error,
+) error {
+	if job.Attempt >= maxJobRetries {
+		return errJobRetryLimitReached
+	}
+
+	errorMessage := failure.Error()
+
+	if err := db.RequeueJob(job.JobID, &errorMessage); err != nil {
+		return fmt.Errorf("requeue job in database: %w", err)
+	}
+
+	if err := rabbitMQ.PublishJobRetry(ctx, job); err != nil {
+		return fmt.Errorf("publish job retry: %w", err)
+	}
+
+	return nil
+}
+
+func failJobToDLQ(
+	ctx context.Context,
+	db *database.DB,
+	rabbitMQ *queue.RabbitMQ,
+	job domain.JobMessage,
+	failure error,
+) error {
+	errorMessage := failure.Error()
+
+	if err := db.UpdateJobStatus(
+		job.JobID,
+		domain.JobStatusFailed,
+		&errorMessage,
+	); err != nil {
+		return fmt.Errorf("mark job failed: %w", err)
+	}
+
+	if err := rabbitMQ.PublishJobDLQ(ctx, job); err != nil {
+		return fmt.Errorf("publish job to DLQ: %w", err)
+	}
+
+	return nil
+}
+
+func cleanupObjects(
+	ctx context.Context,
+	storage *storage.MinIO,
+	keys []string,
+) {
+	for _, key := range keys {
+		if err := storage.DeleteObject(ctx, key); err != nil {
+			log.Printf(
+				"could not clean up partial object %s: %v",
+				key,
+				err,
+			)
+		}
+	}
+}
+
 
 func main() {
 	// 1. Cargamos la configuración desde variables de entorno.
@@ -189,6 +258,49 @@ func main() {
 			continue
 		}
 
+		// Un Job FAILED es terminal.
+		// No debe volver a entrar al claim ni al pipeline.
+		if persistedJob.Status == domain.JobStatusFailed {
+			log.Printf(
+				"job %s already failed; handling terminal delivery",
+				persistedJob.ID,
+			)
+
+			if job.Attempt >= maxJobRetries {
+				if err := rabbitMQ.PublishJobDLQ(
+					context.Background(),
+					job,
+				); err != nil {
+					log.Printf(
+						"could not publish failed job %s to DLQ: %v",
+						job.JobID,
+						err,
+					)
+
+					if nackErr := message.Nack(false, true); nackErr != nil {
+						log.Printf(
+							"could not requeue failed job %s: %v",
+							job.JobID,
+							nackErr,
+						)
+					}
+
+					continue
+				}
+			}
+
+			if ackErr := message.Ack(false); ackErr != nil {
+				log.Printf(
+					"could not acknowledge already failed job %s: %v",
+					job.JobID,
+					ackErr,
+				)
+			}
+
+			continue
+		}
+
+
 		// rechazo de mismo job entre dos workers, solo uno toma el job y lo procesa.
 		staleBefore := time.Now().Add(-5 * time.Minute)
 
@@ -196,7 +308,47 @@ func main() {
 			job.JobID,
 			staleBefore,
 		)
+		
 		if err != nil {
+			if errors.Is(err, database.ErrJobNotClaimable) {
+				log.Printf(
+					"job %s is temporarily not claimable; deferring delivery (attempt=%d)",
+					job.JobID,
+					job.Attempt,
+				)
+
+				if retryErr := rabbitMQ.PublishJobDeferred(
+					context.Background(),
+					job,
+				); retryErr != nil {
+					log.Printf(
+						"could not publish retry for job %s: %v",
+						job.JobID,
+						retryErr,
+					)
+
+					if nackErr := message.Nack(false, true); nackErr != nil {
+						log.Printf(
+							"could not requeue job %s after retry publish failure: %v",
+							job.JobID,
+							nackErr,
+						)
+					}
+
+					continue
+				}
+
+				if ackErr := message.Ack(false); ackErr != nil {
+					log.Printf(
+						"could not acknowledge job %s after scheduling retry: %v",
+						job.JobID,
+						ackErr,
+					)
+				}
+
+				continue
+			}
+
 			log.Printf(
 				"could not claim job %s for processing: %v",
 				job.JobID,
@@ -253,15 +405,100 @@ func main() {
 			context.Background(),
 			document.StorageKey,
 		)
+
 		if err != nil {
 			log.Printf(
-				"could not get document %s from MinIO: %v",
+				"could not get document %s from MinIO for job %s: %v",
 				document.ID,
+				job.JobID,
 				err,
 			)
 
-			if nackErr := message.Nack(false, false); nackErr != nil {
-				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			retryErr := retryJob(
+				context.Background(),
+				db,
+				rabbitMQ,
+				job,
+				err,
+			)
+
+			if retryErr != nil {
+				if errors.Is(retryErr, errJobRetryLimitReached) {
+					log.Printf(
+						"job %s exhausted retries at attempt=%d; moving to DLQ",
+						job.JobID,
+						job.Attempt,
+					)
+
+					if terminalErr := failJobToDLQ(
+						context.Background(),
+						db,
+						rabbitMQ,
+						job,
+						err,
+					); terminalErr != nil {
+						log.Printf(
+							"could not finalize failed job %s: %v",
+							job.JobID,
+							terminalErr,
+						)
+
+						if nackErr := message.Nack(false, true); nackErr != nil {
+							log.Printf(
+								"could not requeue job %s after terminal failure: %v",
+								job.JobID,
+								nackErr,
+							)
+						}
+
+						continue
+					}
+
+					log.Printf(
+						"job %s marked failed and moved to DLQ",
+						job.JobID,
+					)
+
+					if ackErr := message.Ack(false); ackErr != nil {
+						log.Printf(
+							"could not acknowledge failed job %s: %v",
+							job.JobID,
+							ackErr,
+						)
+					}
+
+					continue
+				}
+
+				log.Printf(
+					"could not schedule retry for job %s: %v",
+					job.JobID,
+					retryErr,
+				)
+
+				if nackErr := message.Nack(false, true); nackErr != nil {
+					log.Printf(
+						"could not requeue current message for job %s: %v",
+						job.JobID,
+						nackErr,
+					)
+				}
+
+				continue
+			}
+
+			log.Printf(
+				"retry scheduled for job %s: next attempt=%d",
+				job.JobID,
+				job.Attempt+1,
+			)
+
+			if ackErr := message.Ack(false); ackErr != nil {
+				log.Printf(
+					"could not acknowledge job %s after scheduling retry: %v",
+					job.JobID,
+					ackErr,
+				)
 			}
 
 			continue
@@ -272,13 +509,97 @@ func main() {
 
 		if err != nil {
 			log.Printf(
-				"could not read document %s: %v",
+				"could not read document %s for job %s: %v",
 				document.ID,
+				job.JobID,
 				err,
 			)
 
-			if nackErr := message.Nack(false, false); nackErr != nil {
-				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			retryErr := retryJob(
+				context.Background(),
+				db,
+				rabbitMQ,
+				job,
+				err,
+			)
+
+			if retryErr != nil {
+				if errors.Is(retryErr, errJobRetryLimitReached) {
+					log.Printf(
+						"job %s exhausted retries at attempt=%d; moving to DLQ",
+						job.JobID,
+						job.Attempt,
+					)
+
+					if terminalErr := failJobToDLQ(
+						context.Background(),
+						db,
+						rabbitMQ,
+						job,
+						err,
+					); terminalErr != nil {
+						log.Printf(
+							"could not finalize failed job %s: %v",
+							job.JobID,
+							terminalErr,
+						)
+
+						if nackErr := message.Nack(false, true); nackErr != nil {
+							log.Printf(
+								"could not requeue job %s after terminal failure: %v",
+								job.JobID,
+								nackErr,
+							)
+						}
+
+						continue
+					}
+
+					log.Printf(
+						"job %s marked failed and moved to DLQ",
+						job.JobID,
+					)
+
+					if ackErr := message.Ack(false); ackErr != nil {
+						log.Printf(
+							"could not acknowledge failed job %s: %v",
+							job.JobID,
+							ackErr,
+						)
+					}
+
+					continue
+				}
+
+				log.Printf(
+					"could not schedule retry for job %s: %v",
+					job.JobID,
+					retryErr,
+				)
+
+				if nackErr := message.Nack(false, true); nackErr != nil {
+					log.Printf(
+						"could not requeue current message for job %s: %v",
+						job.JobID,
+						nackErr,
+					)
+				}
+
+				continue
+			}
+
+			log.Printf(
+				"retry scheduled for job %s: next attempt=%d",
+				job.JobID,
+				job.Attempt+1,
+			)
+
+			if ackErr := message.Ack(false); ackErr != nil {
+				log.Printf(
+					"could not acknowledge job %s after scheduling retry: %v",
+					job.JobID,
+					ackErr,
+				)
 			}
 
 			continue
@@ -449,6 +770,8 @@ func main() {
 
 		bundleUploadFailed := false
 
+		uploadedKeys := make([]string, 0, len(bundle.Files)+1)
+
 		for _, file := range bundle.Files {
 			objectKey := fmt.Sprintf(
 				"%s/%s",
@@ -473,9 +796,15 @@ func main() {
 				bundleUploadFailed = true
 				break
 			}
+			uploadedKeys = append(uploadedKeys, objectKey)
 		}
 
 		if bundleUploadFailed {
+			cleanupObjects(
+				context.Background(),
+				minioStorage,
+				uploadedKeys,
+			)
 			errMsg := "could not store bundle in object storage"
 
 			if updateErr := db.UpdateJobStatus(
@@ -515,6 +844,11 @@ func main() {
 			int64(len(bundleZIP)),
 			"application/zip",
 		); err != nil {
+			cleanupObjects(
+				context.Background(),
+				minioStorage,
+				uploadedKeys,
+			)
 			errMsg := err.Error()
 
 			log.Printf(
@@ -542,6 +876,8 @@ func main() {
 			continue
 		}
 
+		uploadedKeys = append(uploadedKeys, bundleZIPKey)
+
 		log.Printf(
 			"bundle zip stored in MinIO for job %s: key=%s",
 			persistedJob.ID,
@@ -556,6 +892,11 @@ func main() {
 			bundle.ConceptCount,
 		)
 		if err != nil {
+			cleanupObjects(
+				context.Background(),
+				minioStorage,
+				uploadedKeys,
+			)
 			errMsg := err.Error()
 
 			log.Printf(
