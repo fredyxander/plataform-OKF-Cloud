@@ -10,13 +10,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/fredyxander/okf-platform/backend/internal/application"
 	"github.com/fredyxander/okf-platform/backend/internal/auth"
 	"github.com/fredyxander/okf-platform/backend/internal/config"
 	"github.com/fredyxander/okf-platform/backend/internal/database"
-	"github.com/fredyxander/okf-platform/backend/internal/domain"
 	httpapi "github.com/fredyxander/okf-platform/backend/internal/http"
 	"github.com/fredyxander/okf-platform/backend/internal/queue"
 	"github.com/fredyxander/okf-platform/backend/internal/storage"
@@ -116,8 +113,15 @@ func main() {
 		minioStorage,
 	)
 
+	processingService := application.NewProcessingService(
+		documentService,
+		db,
+		rabbitMQ,
+	)
+
 	documentHandler := httpapi.NewDocumentHandler(
 		documentService,
+		processingService,
 	)
 
 	bundleHandler := httpapi.NewBundleHandler(
@@ -146,70 +150,6 @@ func main() {
 
 	http.HandleFunc("GET /documents/{id}/download",
 		httpapi.AuthMiddleware(tokenManager, documentHandler.Download),
-	)
-
-	http.HandleFunc("POST /jobs",
-		httpapi.AuthMiddleware(
-			tokenManager,
-			func(w http.ResponseWriter, r *http.Request) {
-
-				var req struct {
-					DocumentID string `json:"documentId"`
-				}
-
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid request body", http.StatusBadRequest)
-					return
-				}
-
-				ownerID, ok := httpapi.UserIDFromContext(r.Context())
-				if !ok {
-					http.Error(w, "unauthorized", http.StatusUnauthorized)
-					return
-				}
-
-				if req.DocumentID == "" {
-					http.Error(w, "documentId is required", http.StatusBadRequest)
-					return
-				}
-
-				_, err = db.GetDocumentByID(req.DocumentID, ownerID)
-				if err != nil {
-					http.Error(w, "document not found", http.StatusNotFound)
-					return
-				}
-				persistedJob, err := db.CreateJob(
-					req.DocumentID,
-					ownerID,
-					uuid.NewString(),
-				)
-				if err != nil {
-					http.Error(w, "could not create job", http.StatusInternalServerError)
-					return
-				}
-
-				job := domain.JobMessage{
-					JobID: persistedJob.ID,
-				}
-
-				if err := rabbitMQ.PublishJob(r.Context(), job); err != nil {
-					http.Error(
-						w,
-						"could not publish job",
-						http.StatusInternalServerError,
-					)
-
-					return
-				}
-
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusAccepted)
-
-				json.NewEncoder(w).Encode(map[string]string{
-					"jobId":  persistedJob.ID,
-					"status": "queued",
-				})
-			}),
 	)
 
 	http.HandleFunc("GET /jobs",

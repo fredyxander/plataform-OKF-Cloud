@@ -491,7 +491,7 @@ POST /jobs
 - JWT authentication.
 - Resource authorization.
 
-### Milestone 5 — Document pipeline
+### Milestone 5 — Document pipeline ✅
 
 - Upload.
 - MinIO storage.

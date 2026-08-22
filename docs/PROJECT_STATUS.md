@@ -1,6 +1,6 @@
 # Estado del proyecto --- Plataforma OKF Cloud
 
-**Fecha de corte:** 21 de agosto de 2026\
+**Fecha de corte:** 22 de agosto de 2026\
 **Repositorio:** `fredyxander/plataform-OKF-Cloud`\
 **Propósito de este documento:** servir como checkpoint técnico para
 continuar el desarrollo en una nueva sesión sin perder decisiones,
@@ -906,19 +906,105 @@ detectable y texto plano como formato simple soportado.
 
 ## Milestone 6 --- Pipeline OKF
 
-**PENDIENTE.**
+**COMPLETADO Y VERIFICADO END-TO-END.**
 
-Objetivos:
+Se reemplazó el procesamiento temporal del worker por el pipeline OKF real y se consolidó el flujo de carga y procesamiento asíncrono.
 
--   worker obtiene documento desde MinIO;
--   conversión;
--   generación de `index.md`;
--   `log.md`;
--   conceptos/secciones;
--   assets;
--   validación;
--   almacenamiento de bundle en MinIO;
--   creación de registro `Bundle`.
+Resultados principales:
+
+- el worker obtiene el documento original desde MinIO usando la metadata persistida en PostgreSQL;
+- conversión implementada para `plaintext` y `markdown`;
+- Markdown se segmenta determinísticamente por encabezados H1 (`#`), preservando el orden;
+- si un Markdown no contiene H1, se conserva como un único concepto;
+- generación de bundle con `index.md`, `log.md` y `concept-NN.md`;
+- validación del bundle antes de publicarlo y antes de marcar el Job como `completed`;
+- `index.md` referencia los conceptos generados y conserva su orden;
+- `log.md` registra archivo fuente, formato y cantidad de conceptos;
+- generación de `bundle.zip` con el bundle completo;
+- archivos individuales y ZIP persistidos en MinIO bajo `bundles/{ownerID}/{jobID}/`;
+- `bundles.storage_key` apunta al objeto concreto `bundle.zip`;
+- metadata del Bundle persistida en PostgreSQL con `job_id`, `owner_id`, `storage_key`, `is_valid` y `concept_count`;
+- contrato verificado: un Job solo pasa a `completed` después de convertir, construir, validar, almacenar el bundle y persistir su metadata;
+- ante error de conversión, el Job pasa a `failed`, conserva `error_message` y no se publica un bundle válido;
+- endpoint protegido `GET /jobs/{id}/bundle` implementado para descargar el ZIP mediante streaming desde MinIO;
+- aislamiento de bundles verificado: propietario + JWT → `200`; usuario ajeno → `404`; sin JWT → `401`;
+- `GET /jobs/{id}` fue extraído a `JobHandler` y, para jobs `completed`, incluye metadata del bundle y `download_url`;
+- tests agregados para el contrato del detalle: `processing → bundle:null`, `failed → bundle:null + error_message`, `completed → bundle disponible`;
+- `ProcessingService` agregado como capa de aplicación para orquestar `CreateDocument → CreateJob → PublishJob`;
+- `ProcessingService` depende de interfaces (`DocumentCreator`, `JobRepository`, `JobPublisher`) y fue probado con fakes;
+- tests verificados para happy path, fallo de `CreateJob` sin publicación y fallo de `PublishJob` marcando el Job como `failed`;
+- `POST /documents` ahora inicia automáticamente el procesamiento y responde `202 Accepted` con `document`, `jobId` y `status`;
+- el antiguo `POST /jobs` fue eliminado por redundante: existe un único flujo oficial para iniciar procesamiento;
+- `GET /jobs` continúa retornando correctamente los Jobs del usuario autenticado;
+- descarga real de `bundle.zip` verificada con `curl`;
+- suite `go test ./...` ejecutada satisfactoriamente después de los cambios.
+
+Flujo final verificado:
+
+``` text
+POST /documents + JWT
+      │
+      ▼
+DocumentHandler
+      │
+      ▼
+ProcessingService
+      │
+      ├── DocumentService
+      │      ├── MinIO: original
+      │      └── PostgreSQL: Document
+      │
+      ├── PostgreSQL: Job → QUEUED
+      └── RabbitMQ: publish JobID
+                     │
+                     ▼
+                   Worker
+                     │
+                     ├── Job → PROCESSING
+                     ├── obtiene original desde MinIO
+                     ├── Convert / Segment
+                     ├── BuildBundle
+                     ├── ValidateBundle
+                     ├── PackageBundle → bundle.zip
+                     ├── MinIO: archivos + bundle.zip
+                     ├── PostgreSQL: Bundle metadata
+                     └── Job → COMPLETED → ACK
+                                  │
+                                  ▼
+                         GET /jobs/{id}
+                                  │
+                                  ▼
+                      GET /jobs/{id}/bundle
+```
+
+Endpoints relevantes al cierre de M6:
+
+``` text
+POST /documents
+GET  /documents/{id}/download
+GET  /jobs
+GET  /jobs/{id}
+GET  /jobs/{id}/bundle
+```
+
+`POST /jobs` ya no existe. La creación del Job forma parte del flujo de `POST /documents`.
+
+### Alcance actual de segmentación
+
+La segmentación estructurada implementada reconoce encabezados Markdown H1. No se implementaron todavía reglas avanzadas para H2/H3, jerarquías complejas, assets embebidos ni conversores PDF/DOCX/EPUB. Para el alcance mínimo actual se mantienen Markdown y texto plano.
+
+### Deuda técnica trasladada a M7
+
+- idempotencia real ante redelivery y semántica at-least-once;
+- retries limitados y DLQ;
+- limpieza/compensación de objetos parciales si falla una subida del bundle a MinIO;
+- evitar bundles duplicados si el worker recibe el mismo Job más de una vez;
+- consistencia PostgreSQL ↔ RabbitMQ: evaluar Transactional Outbox o reconciliación;
+- publisher confirms;
+- reconexión RabbitMQ durante runtime;
+- graceful shutdown del worker;
+- formalizar transiciones válidas de estado;
+- automatizar más pruebas E2E de autorización y descarga.
 
 ## Milestone 7 --- Confiabilidad del procesamiento
 
@@ -1198,32 +1284,24 @@ Se agregó validación de `job.JobID == ""` y NACK.
 
 # 11. Próximo paso recomendado
 
-Los Milestones 1, 2, 3, 4 y 5 están completados y verificados.
+Los Milestones 1, 2, 3, 4, 5 y 6 están completados y verificados.
 
-El siguiente bloque funcional recomendado es:
+El siguiente bloque recomendado es:
 
-## Milestone 6 --- Pipeline OKF
+## Milestone 7 --- Confiabilidad del procesamiento
 
 Orden sugerido:
 
-1.  reemplazar el procesamiento temporal (`time.Sleep`) por
-    procesamiento real;
-2.  hacer que el worker obtenga el documento original desde MinIO;
-3.  generar la estructura mínima del bundle OKF, comenzando por
-    `index.md`;
-4.  generar `log.md` y estructura de conceptos/secciones según el
-    alcance;
-5.  validar el bundle antes de marcar el Job como completado;
-6.  almacenar el bundle generado en MinIO;
-7.  crear/persistir el registro `Bundle` en PostgreSQL;
-8.  implementar los endpoints necesarios para consultar/descargar
-    bundles;
-9.  aplicar a bundles el patrón de autorización de M4 (`owner_id` desde
-    JWT);
-10. verificar end-to-end `documento → job → worker → bundle`.
+1. definir formalmente la estrategia de idempotencia y redelivery;
+2. impedir la creación de más de un bundle final por Job;
+3. implementar retries limitados y DLQ para fallos transitorios;
+4. resolver/mitigar bundles parciales en MinIO;
+5. incorporar publisher confirms;
+6. evaluar Transactional Outbox o reconciliación para PostgreSQL + RabbitMQ;
+7. revisar reconexión AMQP en runtime y graceful shutdown;
+8. ejecutar pruebas de fallos y redelivery con múltiples workers.
 
-No mezclar todavía M7 (retry/DLQ/idempotencia avanzada) salvo que una
-necesidad concreta del pipeline obligue a resolver una parte antes.
+No mezclar todavía el frontend (M8) salvo que sea necesario para validar un contrato HTTP concreto.
 
 ------------------------------------------------------------------------
 
@@ -1261,10 +1339,11 @@ Usar este texto junto con este archivo:
 > Milestones 1, 2, 3, 4 y 5 están completados y verificados. M4
 > implementó registro, bcrypt, login, JWT, middleware y autorización por
 > `owner_id` para documentos y jobs. `X-Test-Owner-ID` y `/jobs/test`
-> fueron eliminados. Los endpoints actuales de jobs son `POST /jobs`,
-> `GET /jobs` y `GET /jobs/{id}`. El siguiente trabajo recomendado es el
-> Milestone 6: pipeline OKF y generación de bundles. La autorización
-> HTTP de bundles debe implementarse cuando exista ese flujo. Quiero
+> fueron eliminados. Los endpoints actuales de jobs son `GET /jobs`, `GET /jobs/{id}` y
+> `GET /jobs/{id}/bundle`. `POST /documents` crea y encola automáticamente
+> el Job y responde `202 Accepted` con `jobId`. Los Milestones 1 a 6 están
+> completados y verificados. El siguiente trabajo recomendado es el
+> Milestone 7: confiabilidad del procesamiento. Quiero
 > avanzar paso a paso y verificar cada cambio. Mantén buenas prácticas
 > de arquitectura sin sobrecomplicar prematuramente el proyecto.
 
@@ -1277,14 +1356,12 @@ Infraestructura Docker          ██████████  completa
 RabbitMQ async flow             ██████████  completo
 Robustez básica RabbitMQ        ██████████  completa para startup
 Capa PostgreSQL                 ██████████  completa e integrada
-Autenticación/autorización      ██████████  completa para documentos/jobs
+Autenticación/autorización      ██████████  completa para documentos/jobs/bundles
 Documentos + MinIO              ██████████  completo y verificado
-Pipeline OKF                    ░░░░░░░░░░  siguiente milestone
-Confiabilidad avanzada          ████░░░░░░  prefetch/ACK listos; faltan retry/DLQ/idempotencia
+Pipeline OKF                    ██████████  completo y verificado E2E
+Confiabilidad avanzada          ████░░░░░░  siguiente milestone
 Frontend funcional              ░░░░░░░░░░  pendiente
 Observabilidad/pruebas finales  ░░░░░░░░░░  pendiente
 ```
 
-**Siguiente acción:** iniciar el Milestone 6 --- pipeline OKF,
-manteniendo el desarrollo incremental y las pruebas verificables. La
-autorización de bundles se completa cuando se implementen sus endpoints.
+**Siguiente acción:** iniciar el Milestone 7 --- confiabilidad del procesamiento, comenzando por idempotencia/redelivery y evitando bundles duplicados antes de introducir retries y DLQ.

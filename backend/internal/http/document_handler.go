@@ -14,12 +14,17 @@ import (
 const maxUploadSize int64 = 10 * 1024 * 1024 // 10 MB
 
 type DocumentHandler struct {
-	service *application.DocumentService
+	documentService   *application.DocumentService
+	processingService *application.ProcessingService
 }
 
-func NewDocumentHandler(service *application.DocumentService) *DocumentHandler {
+func NewDocumentHandler(
+	documentService *application.DocumentService,
+	processingService *application.ProcessingService,
+) *DocumentHandler {
 	return &DocumentHandler{
-		service: service,
+		documentService:   documentService,
+		processingService: processingService,
 	}
 }
 
@@ -76,7 +81,7 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	document, err := h.service.CreateDocument(
+	result, err := h.processingService.CreateProcessingJob(
 		r.Context(),
 		ownerID,
 		filename,
@@ -86,14 +91,22 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		file,
 	)
 	if err != nil {
-		http.Error(w, "could not create document", http.StatusInternalServerError)
+		http.Error(
+			w,
+			"could not create processing job",
+			http.StatusInternalServerError,
+		)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(http.StatusAccepted)
 
-	if err := json.NewEncoder(w).Encode(document); err != nil {
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"document": result.Document,
+		"jobId":    result.Job.ID,
+		"status":   result.Job.Status,
+	}); err != nil {
 		return
 	}
 }
@@ -116,7 +129,7 @@ func (h *DocumentHandler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	document, object, err := h.service.GetDocument(
+	document, object, err := h.documentService.GetDocument(
 		r.Context(),
 		documentID,
 		ownerID,

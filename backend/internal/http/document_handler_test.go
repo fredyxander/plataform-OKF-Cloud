@@ -72,7 +72,7 @@ func newTestDocumentHandler() *DocumentHandler {
 		&fakeObjectStorage{},
 	)
 
-	return NewDocumentHandler(service)
+	return NewDocumentHandler(service, nil)
 }
 
 func withUserID(req *http.Request, userID string) *http.Request {
@@ -166,7 +166,7 @@ func TestUploadUnsupportedType(t *testing.T) {
 	}
 }
 
-//documento >10MB, size establecido por nosotros
+// documento >10MB, size establecido por nosotros
 func TestUploadFileTooLarge(t *testing.T) {
 	handler := newTestDocumentHandler()
 
