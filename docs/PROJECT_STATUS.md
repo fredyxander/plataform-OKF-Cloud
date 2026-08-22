@@ -4,7 +4,7 @@
 **Repositorio:** `fredyxander/plataform-OKF-Cloud`\
 **Propósito de este documento:** servir como checkpoint técnico para
 continuar el desarrollo en una nueva sesión sin perder decisiones,
-avances, pruebas realizadas ni deuda técnica conocida.
+avances, pruebas realizadas ni pendientes relevantes.
 
 ------------------------------------------------------------------------
 
@@ -352,9 +352,7 @@ attempt 2 → connected
 
 tanto en API como en worker.
 
-**Limitación conocida:** este retry protege principalmente el arranque.
-Todavía no existe reconexión AMQP completa cuando RabbitMQ se cae
-durante runtime.
+El retry implementado en esta etapa protege el arranque de API y worker, que es el comportamiento requerido para el alcance actual.
 
 ------------------------------------------------------------------------
 
@@ -813,21 +811,9 @@ JWT → authenticated ownerID → consulta por recurso + owner_id → 404 si es 
 `ownerId` nunca debe aceptarse como identidad suministrada por el
 cliente.
 
-### Deuda técnica no bloqueante identificada durante M4
+### Cierre de M4
 
--   varios handlers de jobs permanecen inline en `cmd/api/main.go`;
-    conviene extraer posteriormente `JobHandler` y, cuando aporte valor,
-    `JobService`;
--   `application` conoce actualmente errores definidos en `database`
-    (`ErrNotFound` / `ErrAlreadyExists`); puede desacoplarse mediante
-    errores de aplicación/repositorio compartidos;
--   configuración de RabbitMQ está centralizada en `internal/config`,
-    mientras PostgreSQL, MinIO y JWT todavía se leen parcialmente desde
-    `main.go`;
--   varias pruebas end-to-end de autorización se verificaron manualmente
-    y conviene automatizarlas antes del cierre;
--   autorización de bundles queda pendiente hasta implementar el flujo
-    de bundles en el Milestone 6.
+La autenticación y autorización por `owner_id` quedaron completadas. Las pruebas de aislamiento requeridas se volverán a ejecutar dentro del checklist final contra la rúbrica.
 
 ## Milestone 5 --- Documentos + MinIO
 
@@ -993,246 +979,99 @@ GET  /jobs/{id}/bundle
 
 La segmentación estructurada implementada reconoce encabezados Markdown H1. No se implementaron todavía reglas avanzadas para H2/H3, jerarquías complejas, assets embebidos ni conversores PDF/DOCX/EPUB. Para el alcance mínimo actual se mantienen Markdown y texto plano.
 
-### Deuda técnica trasladada a M7
+### Aspectos de M6 resueltos posteriormente en M7
 
-- idempotencia real ante redelivery y semántica at-least-once;
-- retries limitados y DLQ;
-- limpieza/compensación de objetos parciales si falla una subida del bundle a MinIO;
-- evitar bundles duplicados si el worker recibe el mismo Job más de una vez;
-- consistencia PostgreSQL ↔ RabbitMQ: evaluar Transactional Outbox o reconciliación;
-- publisher confirms;
-- reconexión RabbitMQ durante runtime;
-- graceful shutdown del worker;
-- formalizar transiciones válidas de estado;
-- automatizar más pruebas E2E de autorización y descarga.
+Los riesgos principales que quedaron abiertos al terminar M6 fueron tratados en M7: idempotencia ante redelivery, prevención de procesamiento concurrente, retries limitados, DLQ y compensación de objetos parciales en MinIO.
+
+Queda pendiente antes del frontend una revisión funcional de la **clasificación del resultado de validación del bundle** para alinearla explícitamente con la rúbrica del proyecto:
+
+``` text
+VALID
+VALID_WITH_WARNINGS
+INVALID
+```
+
+La validación actual ya impide publicar bundles inválidos; el siguiente paso es revisar si la representación del resultado distingue de forma explícita un bundle válido con advertencias de uno plenamente válido.
 
 ## Milestone 7 --- Confiabilidad del procesamiento
 
-**PENDIENTE.**
+**COMPLETADO Y VERIFICADO.**
 
-Objetivos detallados en la siguiente sección.
+Se implementó y verificó el núcleo de confiabilidad requerido para procesamiento at-least-once:
+
+- idempotencia ante redelivery: un Job `completed` se reconoce y se ACKea sin reprocesar;
+- claim atómico `queued -> processing` y protección ante procesamiento concurrente;
+- recuperación de Jobs `processing` abandonados mediante lease basado en `updated_at`;
+- distinción entre Job inexistente y Job temporalmente no reclamable;
+- colas RabbitMQ `document_jobs_retry` y `document_jobs_dlq`;
+- retry diferido con TTL para contención, sin consumir el contador de intentos;
+- `Attempt` reservado para fallos reales del pipeline;
+- transición controlada `processing -> queued` mediante `RequeueJob`;
+- máximo de 3 retries reales; al agotarse: `FAILED` + `error_message` + DLQ + ACK;
+- compensación de objetos parciales en MinIO si falla la subida o persistencia del bundle;
+- verificación E2E del flujo normal posterior al cleanup: `queued -> processing -> completed`;
+- verificación de ausencia de reprocesamiento para Jobs `completed` reentregados;
+- verificación de recuperación de un Job `processing` stale;
+- verificación de que un fallo real consume `Attempt` y un defer por contención no lo incrementa.
+
+Con esto M7 se considera cerrado para el alcance académico del proyecto.
+
+## Checklist obligatorio previo a M8 --- cierre backend y rúbrica
+
+**PENDIENTE.** Se realizará antes de comenzar el frontend para terminar primero el backend y dejar claros los contratos que consumirá React.
+
+Orden acordado:
+
+1. **Clasificación de validación del bundle.** Revisar e implementar, si hace falta, la distinción explícita `VALID / VALID_WITH_WARNINGS / INVALID`, conservando la regla de que un bundle inválido no se publica ni puede descargarse.
+2. **Conversión y generación avanzada del bundle.** Revisar el comportamiento del conversor con configuraciones representativas: documento breve sin divisiones, documento con varias unidades, orden de conceptos, enlaces del índice y casos límite razonables. La implementación de formatos adicionales no es obligatoria en esta fase.
+3. **Pruebas de las seis condiciones verificables del PDF.** Dejar evidencia reproducible de asincronía efectiva, documento breve, documento estructurado, bundle incompleto, aislamiento entre usuarios y ausencia de duplicados ante redelivery.
+4. **README reproducible desde entorno limpio.** Verificar que una persona pueda levantar y probar el sistema con `docker compose up -d --build` siguiendo únicamente el README y `.env.example`.
+5. **Escalabilidad con dos workers.** Ejecutar al menos dos workers y demostrar distribución de Jobs, manteniendo `prefetch = 1`, claim atómico y ausencia de duplicados.
+6. **Contrato de notificación de finalización.** Definir y probar el comportamiento que utilizará el frontend para seguir un `jobId`, detectar `completed`/`failed` y permitir redirigir al usuario a la descarga del bundle. Debe mantenerse también una vista/listado general de Jobs; la notificación no reemplaza la navegación a `/jobs`.
 
 ## Milestone 8 --- Frontend funcional
 
+**PENDIENTE.** Se inicia únicamente después del checklist previo de backend.
+
+Alcance mínimo alineado con la rúbrica:
+
+- autenticación y manejo del JWT;
+- carga de documentos mediante `POST /documents`;
+- recepción inmediata y seguimiento del `jobId`;
+- vista/listado de Jobs accesible por navegación normal;
+- visualización de estados `queued`, `processing`, `completed` y `failed`;
+- notificación cuando el Job finaliza;
+- posibilidad de redirigir desde la notificación al resultado del Job sin eliminar la vista general de Jobs;
+- disponibilidad y descarga de `GET /jobs/{id}/bundle` cuando el Job esté completado;
+- manejo claro de errores de autorización y procesamiento.
+
+## Milestone 9 --- Entrega, sustentación y cierre
+
 **PENDIENTE.**
 
--   autenticación;
--   upload;
--   lista de documentos;
--   creación de job;
--   estado de jobs;
--   bundle disponible;
--   descarga;
--   notificación de finalización.
-
-## Milestone 9 --- Observabilidad, pruebas y cierre
-
-**PENDIENTE.**
-
--   logs estructurados;
--   health/readiness;
--   métricas si aplica;
--   pruebas;
--   pruebas de fallos;
--   documentación;
--   demostración de escalabilidad;
--   validación de requisitos OKF.
+- ejecutar el recorrido final desde un entorno limpio;
+- consolidar las pruebas requeridas por la rúbrica;
+- preparar evidencia de arquitectura, asincronía, aislamiento, validación e idempotencia;
+- preparar el video de sustentación de máximo 20 minutos;
+- documentar limitaciones conocidas y decisiones de diseño.
 
 ------------------------------------------------------------------------
 
-# 9. Deuda técnica y decisiones que NO deben olvidarse
+# 9. Alcance opcional / bonus si sobra tiempo
 
-## 9.1 RabbitMQ prefetch / QoS --- RESUELTO EN MILESTONE 3
+Estas capacidades no bloquean el cierre de backend ni el inicio de M8:
 
-Se configuró `prefetch = 1` mediante QoS en el consumer y se verificó
-con dos jobs consecutivos.
+- segundo formato de entrada adicional al formato estructurado mínimo;
+- extracción y publicación de `assets/`;
+- cancelación de Jobs;
+- métricas y observabilidad adicional;
+- cálculo separado de conformidad OKF / OKF conformity score;
+- streaming de bundles grandes;
+- mejoras adicionales de UX o notificaciones en tiempo real si el flujo básico ya está estable.
 
-Con múltiples workers y trabajos largos queremos evitar que un consumer
-acumule demasiados mensajes sin confirmar.
-
-Objetivo probable:
-
-``` text
-prefetch = 1
-```
-
-Conceptualmente:
-
-``` text
-Worker A ocupado → no recibe otro job todavía
-Worker B libre   → puede recibir el siguiente
-```
-
-Esto será importante al probar escalamiento horizontal.
-
-## 9.2 Publisher confirms
-
-El hecho de que `Publish` retorne sin error no cubre todos los
-escenarios de pérdida entre producer y broker.
-
-Evaluar publisher confirms para saber que RabbitMQ aceptó el mensaje.
-
-## 9.3 Retry de jobs
-
-Actualmente un mensaje inválido se descarta con NACK sin requeue.
-
-Para fallos transitorios del procesamiento se necesita una política
-explícita:
-
-``` text
-Job
- ↓
-fallo
- ↓
-retry limitado
- ↓
-si sigue fallando
- ↓
-DLQ / FAILED
-```
-
-No usar requeue infinito.
-
-## 9.4 Dead-letter queue
-
-Agregar una DLQ para mensajes que excedan el número de intentos o sean
-imposibles de procesar.
-
-## 9.5 Idempotencia
-
-El esquema de jobs ya incluye `idempotency_key`, pero debe integrarse al
-flujo.
-
-El worker debe poder recibir el mismo mensaje más de una vez sin generar
-efectos duplicados.
-
-RabbitMQ + ACK manual implica semántica compatible con entregas
-repetidas en determinados fallos. El diseño debe asumir
-**at-least-once**, no "exactly once".
-
-## 9.6 Reconexión RabbitMQ en runtime
-
-`NewRabbitMQWithRetry` resuelve el arranque, no una desconexión
-posterior.
-
-Más adelante evaluar:
-
--   `NotifyClose`;
--   backoff;
--   recrear connection;
--   recrear channel;
--   redeclarar cola;
--   volver a registrar consumer;
--   recuperación del publisher.
-
-## 9.7 Graceful shutdown
-
-API y worker deberían manejar señales de terminación.
-
-El worker idealmente debe:
-
-1.  dejar de aceptar nuevos trabajos;
-2.  terminar o manejar correctamente el actual;
-3.  ACK/NACK según resultado;
-4.  cerrar channel/conexiones.
-
-## 9.8 Estados de job
-
-Definir y validar formalmente las transiciones permitidas.
-
-Propuesta:
-
-``` text
-QUEUED
-  ↓
-PROCESSING
-  ├──→ COMPLETED
-  ├──→ FAILED
-  └──→ CANCELLED
-```
-
-Evitar transiciones arbitrarias.
-
-## 9.9 Consistencia DB + RabbitMQ
-
-Existe un problema arquitectónico futuro importante:
-
-``` text
-CreateJob en PostgreSQL ✓
-Publish RabbitMQ ✗
-```
-
-El job podría quedar `QUEUED` pero nunca entrar a la cola.
-
-Debe evaluarse una estrategia, por ejemplo:
-
--   transactional outbox; o
--   reconciliación/republicación controlada.
-
-No es necesario implementarlo inmediatamente, pero no debe ignorarse
-antes del cierre del proyecto.
-
-## 9.10 Migraciones
-
-El sistema de migraciones tiene una buena base (tracking, transacción y
-advisory lock).
-
-Se debe verificar especialmente:
-
--   comportamiento desde volumen PostgreSQL vacío;
--   ejecución repetida sin volver a aplicar `001_init.sql`;
--   nueva migración `002_...sql`;
--   comportamiento con dos instancias de API;
--   rollback ante SQL inválido.
-
-## 9.11 Worker + PostgreSQL --- RESUELTO EN MILESTONE 3
-
-El worker está integrado directamente con PostgreSQL y actualiza los
-estados de los jobs.
-
-No debe depender de la API para actualizar jobs.
-
-Arquitectura correcta:
-
-``` text
-Worker ─────────► PostgreSQL
-Worker ─────────► MinIO
-Worker ─────────► RabbitMQ
-
-Worker ─X───────► API
-```
-
-## 9.12 Healthchecks adicionales
-
-RabbitMQ ya tiene healthcheck.
-
-Revisar/agregar:
-
--   PostgreSQL;
--   MinIO;
--   API readiness.
-
-Diferenciar cuando sea útil:
-
--   liveness: el proceso está vivo;
--   readiness: puede atender correctamente sus dependencias.
+La prioridad es completar primero todos los requisitos evaluables del backend, después el frontend funcional y, solo si queda tiempo, implementar bonus.
 
 ------------------------------------------------------------------------
-
-## 9.13 Autenticación/autorización --- BASE RESUELTA EN MILESTONE 4
-
-Registro, login, bcrypt, JWT, middleware y aislamiento por owner están
-implementados para documentos y jobs.
-
-Pendientes no bloqueantes:
-
--   automatizar más pruebas HTTP end-to-end de aislamiento multiusuario;
--   centralizar `JWT_SECRET`, PostgreSQL y MinIO en la capa de
-    configuración;
--   desacoplar errores de aplicación respecto de `internal/database`;
--   extraer handlers de jobs actualmente inline en `cmd/api/main.go`;
--   aplicar autorización a bundles cuando sus endpoints se implementen
-    en M6.
 
 # 10. Problemas ya encontrados y solucionados
 
@@ -1284,24 +1123,19 @@ Se agregó validación de `job.JobID == ""` y NACK.
 
 # 11. Próximo paso recomendado
 
-Los Milestones 1, 2, 3, 4, 5 y 6 están completados y verificados.
+Los Milestones 1, 2, 3, 4, 5, 6 y 7 están completados y verificados.
 
-El siguiente bloque recomendado es:
+Antes de iniciar M8 se completará el **checklist de cierre backend y rúbrica** en este orden:
 
-## Milestone 7 --- Confiabilidad del procesamiento
+1. revisar `VALID / VALID_WITH_WARNINGS / INVALID`;
+2. revisar conversión/generación del bundle con distintas configuraciones representativas;
+3. ejecutar y documentar las seis condiciones verificables del PDF;
+4. verificar README + `.env.example` desde un entorno limpio;
+5. demostrar procesamiento con dos workers y ausencia de duplicados;
+6. definir/probar el contrato de seguimiento y notificación por `jobId`, conservando también la vista general de Jobs;
+7. iniciar M8 --- frontend funcional.
 
-Orden sugerido:
-
-1. definir formalmente la estrategia de idempotencia y redelivery;
-2. impedir la creación de más de un bundle final por Job;
-3. implementar retries limitados y DLQ para fallos transitorios;
-4. resolver/mitigar bundles parciales en MinIO;
-5. incorporar publisher confirms;
-6. evaluar Transactional Outbox o reconciliación para PostgreSQL + RabbitMQ;
-7. revisar reconexión AMQP en runtime y graceful shutdown;
-8. ejecutar pruebas de fallos y redelivery con múltiples workers.
-
-No mezclar todavía el frontend (M8) salvo que sea necesario para validar un contrato HTTP concreto.
+Los desarrollos opcionales quedan fuera de esta ruta crítica y solo se realizarán si sobra tiempo.
 
 ------------------------------------------------------------------------
 
@@ -1336,16 +1170,20 @@ Usar este texto junto con este archivo:
 
 > Estoy desarrollando la Plataforma OKF Cloud descrita en
 > `PROJECT_STATUS.md`. Continúa desde el estado documentado. Los
-> Milestones 1, 2, 3, 4 y 5 están completados y verificados. M4
-> implementó registro, bcrypt, login, JWT, middleware y autorización por
-> `owner_id` para documentos y jobs. `X-Test-Owner-ID` y `/jobs/test`
-> fueron eliminados. Los endpoints actuales de jobs son `GET /jobs`, `GET /jobs/{id}` y
-> `GET /jobs/{id}/bundle`. `POST /documents` crea y encola automáticamente
-> el Job y responde `202 Accepted` con `jobId`. Los Milestones 1 a 6 están
-> completados y verificados. El siguiente trabajo recomendado es el
-> Milestone 7: confiabilidad del procesamiento. Quiero
-> avanzar paso a paso y verificar cada cambio. Mantén buenas prácticas
-> de arquitectura sin sobrecomplicar prematuramente el proyecto.
+> Milestones 1 a 7 están completados y verificados. M7 implementó
+> idempotencia ante redelivery, claim atómico, recuperación de Jobs
+> `processing` abandonados, retry diferido, retries reales limitados con
+> `Attempt`, transición `processing -> queued`, `FAILED + error_message`,
+> DLQ y compensación de objetos parciales en MinIO. Antes de iniciar M8
+> quiero terminar todo lo pendiente del backend en este orden: revisar la
+> clasificación `VALID / VALID_WITH_WARNINGS / INVALID`, revisar la
+> conversión avanzada del bundle con distintas configuraciones, probar las
+> seis condiciones verificables del PDF, validar el README desde entorno
+> limpio, probar con dos workers y definir/probar el contrato de
+> seguimiento/notificación por `jobId` manteniendo también la vista de
+> Jobs. Después se inicia M8 --- frontend funcional. Los bonus solo se
+> implementan si sobra tiempo. Quiero avanzar paso a paso y verificar cada
+> cambio sin sobrecomplicar el proyecto.
 
 ------------------------------------------------------------------------
 
@@ -1354,14 +1192,15 @@ Usar este texto junto con este archivo:
 ``` text
 Infraestructura Docker          ██████████  completa
 RabbitMQ async flow             ██████████  completo
-Robustez básica RabbitMQ        ██████████  completa para startup
+Robustez / idempotencia         ██████████  completa para alcance actual
 Capa PostgreSQL                 ██████████  completa e integrada
 Autenticación/autorización      ██████████  completa para documentos/jobs/bundles
 Documentos + MinIO              ██████████  completo y verificado
 Pipeline OKF                    ██████████  completo y verificado E2E
-Confiabilidad avanzada          ████░░░░░░  siguiente milestone
-Frontend funcional              ░░░░░░░░░░  pendiente
-Observabilidad/pruebas finales  ░░░░░░░░░░  pendiente
+Confiabilidad M7                ██████████  completa y verificada
+Cierre backend contra rúbrica   ███░░░░░░░  pendiente
+Frontend funcional M8           ░░░░░░░░░░  pendiente
+Entrega/sustentación            ░░░░░░░░░░  pendiente
 ```
 
-**Siguiente acción:** iniciar el Milestone 7 --- confiabilidad del procesamiento, comenzando por idempotencia/redelivery y evitando bundles duplicados antes de introducir retries y DLQ.
+**Siguiente acción:** revisar la clasificación del resultado de validación del bundle (`VALID / VALID_WITH_WARNINGS / INVALID`) antes de continuar con el resto del checklist de cierre backend.

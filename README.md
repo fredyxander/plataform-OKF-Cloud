@@ -4,7 +4,7 @@ Multi-user web platform for asynchronous document processing and generation of b
 
 The project is developed as part of the Cloud Architecture course and focuses on applying cloud-native architectural principles such as stateless services, asynchronous processing, persistent external storage, containerization, scalability, and fault isolation.
 
-> **Current status:** Initial infrastructure and containerized services are operational. Business logic and document processing are under development.
+> **Current status:** Milestones 1–7 are completed and verified. The backend E2E flow, authentication/authorization, OKF bundle generation, idempotent redelivery handling, bounded retries, DLQ handling and partial-object cleanup are operational. Before starting the frontend, the remaining backend/rubric checklist is being completed.
 
 ---
 
@@ -46,7 +46,7 @@ The platform follows an asynchronous, service-oriented architecture.
 
 ### Processing flow
 
-The final processing flow will be:
+The current backend processing flow is:
 
 ```text
 User
@@ -419,35 +419,45 @@ bundle/
 
 `log.md` contains conversion and validation information.
 
-A bundle must pass validation before it can be published for download.
+A bundle must pass validation before it can be published for download. Before the frontend milestone, the validation result will be reviewed so it explicitly distinguishes `VALID`, `VALID_WITH_WARNINGS`, and `INVALID` when required by the project rubric.
 
 ---
 
-## Planned Features
+## Current Scope and Remaining Work
 
-The project will progressively implement:
+### Completed core scope
 
-- User registration and authentication.
-- Multi-user resource isolation.
-- Document upload.
-- Persistent document metadata.
-- Asynchronous RabbitMQ jobs.
-- Independent Go workers.
-- Job status tracking.
-- Document conversion.
-- Multiple input formats.
-- OKF bundle generation.
-- Bundle validation.
-- Assets support.
-- Idempotent job processing.
-- Retry policies.
+- User registration, bcrypt password hashing, login and JWT authentication.
+- Multi-user resource isolation by `owner_id`.
+- Document upload to MinIO with persistent metadata in PostgreSQL.
+- Automatic Job creation from `POST /documents` and immediate `202 Accepted` response with `jobId`.
+- Asynchronous RabbitMQ processing with independent Go workers.
+- Job status tracking and authorized bundle download.
+- OKF conversion, segmentation, bundle generation and minimum bundle validation.
+- Idempotent handling of duplicate/redelivered completed Jobs.
+- Atomic Job claiming to avoid concurrent processing of the same queued Job.
+- Recovery of stale `processing` Jobs.
+- Deferred retry queue, bounded processing retries, DLQ and `FAILED` state with `error_message`.
+- Compensation/cleanup of partially uploaded bundle objects in MinIO.
+
+### Required backend/rubric checklist before frontend
+
+1. Review bundle validation classification and explicitly support `VALID / VALID_WITH_WARNINGS / INVALID` if the current representation does not distinguish them.
+2. Review bundle conversion with representative configurations: short document, structured multi-section document, ordered concepts/index links and reasonable edge cases.
+3. Run and document the six verifiable conditions required by the project specification: effective asynchrony, short document, structured document, incomplete bundle rejection, multi-user isolation and duplicate-delivery idempotency.
+4. Verify that a clean environment can be configured and started using only this README, `.env.example`, and `docker compose up -d --build`.
+5. Demonstrate horizontal worker scaling with at least two workers while preserving `prefetch = 1`, atomic claiming and no duplicate final bundle.
+6. Define and verify the completion-notification/status contract around `jobId` so the frontend can detect completion/failure and redirect to the bundle when appropriate. A normal Jobs list/view must remain available independently of notifications.
+
+### Bonus / optional if time remains
+
+- Additional input format.
+- `assets/` extraction and references.
 - Job cancellation.
-- Bundle download.
-- Streaming downloads.
-- Frontend job dashboard.
-- Real-time completion notifications.
-- Observability and structured logging.
-- OKF conformity reporting.
+- Metrics and additional observability.
+- Separate OKF conformity score/reporting.
+- Streaming downloads for large bundles.
+- Additional real-time notification UX beyond the required status-following flow.
 
 ---
 
@@ -467,80 +477,120 @@ The project will progressively implement:
 ### Milestone 2 — Asynchronous communication ✅
 
 ```text
-POST /jobs
+POST /documents
        ↓
      Go API
+       ↓
+Create Document + Job
        ↓
     RabbitMQ
        ↓
     Go Worker
 ```
 
+The HTTP request does not execute the conversion. The API returns the created `jobId` while the worker processes the Job independently.
+
 ### Milestone 3 — Persistence ✅
 
 - Database migrations.
 - Domain entities.
 - Repository layer.
-- Job persistence.
+- Persistent users, documents, Jobs and bundles metadata.
 
-### Milestone 4 — Authentication ✅
+### Milestone 4 — Authentication and authorization ✅
 
 - User registration.
 - Password hashing.
 - Login.
 - JWT authentication.
-- Resource authorization.
+- Resource authorization by owner.
 
-### Milestone 5 — Document pipeline ✅
+### Milestone 5 — Documents + MinIO ✅
 
 - Upload.
-- MinIO storage.
-- Job creation.
+- Original-document object storage.
+- Persistent document metadata.
+- Automatic Job creation and enqueue from `POST /documents`.
+
+### Milestone 6 — OKF pipeline ✅
+
 - Worker processing.
-- OKF bundle generation.
+- Document segmentation.
+- `index.md`, `log.md` and concept generation.
+- Bundle validation before publication.
+- ZIP packaging and bundle download.
 
-### Milestone 6 — Validation and reliability
+### Milestone 7 — Processing reliability ✅
 
-- Bundle validation.
-- Idempotency.
-- Retry policy.
-- Failure handling.
-- Cancellation.
+- Duplicate redelivery idempotency.
+- Atomic Job claim.
+- Stale-processing recovery.
+- Deferred retries for contention.
+- Bounded processing retries.
+- `FAILED` + `error_message` + DLQ.
+- Partial MinIO object cleanup.
 
-### Milestone 7 — Frontend
+### Pre-M8 backend and rubric closure ⏳
 
-- Authentication.
-- Upload.
-- Job dashboard.
-- Status tracking.
-- Notifications.
-- Bundle download.
+- `VALID / VALID_WITH_WARNINGS / INVALID` review.
+- Advanced/representative conversion tests.
+- Six specification verification scenarios.
+- README reproducibility from a clean environment.
+- Two-worker scalability demonstration.
+- `jobId` completion/status notification contract while preserving a general Jobs view.
 
-### Milestone 8 — Extended features
+### Milestone 8 — Functional frontend ⏳
 
-- Multiple document formats.
-- Assets.
-- Streaming.
-- Observability.
-- OKF conformity reporting.
+- Authentication and JWT handling.
+- Document upload.
+- Immediate `jobId` feedback.
+- Jobs list/dashboard.
+- Status tracking (`queued`, `processing`, `completed`, `failed`).
+- Completion notification.
+- Redirect/action from a completed Job to bundle download while preserving normal Jobs navigation.
+- Authorized bundle download.
+
+### Milestone 9 — Delivery and presentation ⏳
+
+- Final clean-environment run.
+- Rubric evidence and required failure/edge-case demonstrations.
+- Architecture and Go-code walkthrough preparation.
+- Maximum-20-minute presentation video.
+- Known limitations and design decisions.
 
 ---
 
 ## Current Status
 
-**Milestone 1 completed.**
+**Milestones 1–7 are completed and verified.**
 
-The complete infrastructure can currently be built and started using:
+The complete platform infrastructure can be built and started with:
 
 ```bash
 docker compose up -d --build
 ```
 
-The next development milestone is the first end-to-end asynchronous communication:
+The current backend flow is:
 
 ```text
-API → RabbitMQ → Worker
+POST /documents
+      ↓
+Document stored in MinIO
+      ↓
+Document + Job metadata in PostgreSQL
+      ↓
+RabbitMQ
+      ↓
+Go Worker
+      ↓
+OKF conversion + validation
+      ↓
+Bundle in MinIO + metadata in PostgreSQL
+      ↓
+COMPLETED / FAILED
 ```
+
+The next task is **backend/rubric closure**, starting with the bundle validation classification (`VALID / VALID_WITH_WARNINGS / INVALID`). The frontend starts only after the remaining backend checklist has been verified.
 
 ---
 
