@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -304,6 +306,177 @@ func main() {
 			len(concepts),
 		)
 
+		bundle, err := okf.BuildBundle(
+			document.Filename,
+			document.Format,
+			concepts,
+		)
+		if err != nil {
+			errMsg := err.Error()
+
+			log.Printf(
+				"could not build bundle for job %s: %v",
+				persistedJob.ID,
+				err,
+			)
+
+			if updateErr := db.UpdateJobStatus(
+				job.JobID,
+				domain.JobStatusFailed,
+				&errMsg,
+			); updateErr != nil {
+				log.Printf(
+					"could not update job %s to failed: %v",
+					job.JobID,
+					updateErr,
+				)
+			}
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
+		if err := okf.ValidateBundle(bundle); err != nil {
+			errMsg := err.Error()
+
+			log.Printf(
+				"bundle validation failed for job %s: %v",
+				persistedJob.ID,
+				err,
+			)
+
+			if updateErr := db.UpdateJobStatus(
+				job.JobID,
+				domain.JobStatusFailed,
+				&errMsg,
+			); updateErr != nil {
+				log.Printf(
+					"could not update job %s to failed: %v",
+					job.JobID,
+					updateErr,
+				)
+			}
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
+		log.Printf(
+			"bundle built and validated for job %s: %d files, %d concepts",
+			persistedJob.ID,
+			len(bundle.Files),
+			bundle.ConceptCount,
+		)
+
+		bundlePrefix := fmt.Sprintf(
+			"bundles/%s/%s",
+			persistedJob.OwnerID,
+			persistedJob.ID,
+		)
+
+		bundleUploadFailed := false
+
+		for _, file := range bundle.Files {
+			objectKey := fmt.Sprintf(
+				"%s/%s",
+				bundlePrefix,
+				file.Name,
+			)
+
+			if err := minioStorage.PutObject(
+				context.Background(),
+				objectKey,
+				bytes.NewReader(file.Content),
+				int64(len(file.Content)),
+				"text/markdown",
+			); err != nil {
+				log.Printf(
+					"could not store bundle file %s for job %s: %v",
+					file.Name,
+					persistedJob.ID,
+					err,
+				)
+
+				bundleUploadFailed = true
+				break
+			}
+		}
+
+		if bundleUploadFailed {
+			errMsg := "could not store bundle in object storage"
+
+			if updateErr := db.UpdateJobStatus(
+				job.JobID,
+				domain.JobStatusFailed,
+				&errMsg,
+			); updateErr != nil {
+				log.Printf(
+					"could not update job %s to failed: %v",
+					job.JobID,
+					updateErr,
+				)
+			}
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
+		log.Printf(
+			"bundle stored in MinIO for job %s: prefix=%s",
+			persistedJob.ID,
+			bundlePrefix,
+		)
+
+		persistedBundle, err := db.CreateBundle(
+			persistedJob.ID,
+			persistedJob.OwnerID,
+			bundlePrefix,
+			true,
+			bundle.ConceptCount,
+		)
+		if err != nil {
+			errMsg := err.Error()
+
+			log.Printf(
+				"could not persist bundle metadata for job %s: %v",
+				persistedJob.ID,
+				err,
+			)
+
+			if updateErr := db.UpdateJobStatus(
+				job.JobID,
+				domain.JobStatusFailed,
+				&errMsg,
+			); updateErr != nil {
+				log.Printf(
+					"could not update job %s to failed: %v",
+					job.JobID,
+					updateErr,
+				)
+			}
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
+		log.Printf(
+			"bundle metadata persisted: bundle_id=%s job_id=%s",
+			persistedBundle.ID,
+			persistedBundle.JobID,
+		)
+
 		// Actualiza estado a completed en postgres
 		if err := db.UpdateJobStatus(
 			job.JobID,
@@ -319,7 +492,7 @@ func main() {
 			continue
 		}
 
-		//log en terminal de completed
+		//log en terminal de completed: significa que existe un bundle válido, almacenado y registrado.
 		log.Printf("job completed: %s", job.JobID)
 
 		// 9. Solo hacemos ACK después de terminar correctamente.

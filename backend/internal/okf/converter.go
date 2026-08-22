@@ -27,12 +27,20 @@ func Convert(filename, format string, content []byte) ([]Concept, error) {
 		}, nil
 
 	case "markdown":
-		return []Concept{
-			{
-				Title:   filename,
-				Content: text,
-			},
-		}, nil
+		concepts := splitMarkdownByH1(text)
+
+		// Si no existen encabezados H1, tratamos todo el documento
+		// como un único concepto.
+		if len(concepts) == 0 {
+			return []Concept{
+				{
+					Title:   filename,
+					Content: text,
+				},
+			}, nil
+		}
+
+		return concepts, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported document format: %s", format)
