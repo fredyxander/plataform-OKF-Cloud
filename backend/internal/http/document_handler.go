@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"path/filepath"
 
@@ -91,11 +92,14 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		file,
 	)
 	if err != nil {
+		log.Printf("could not create processing job: %v", err)
+
 		http.Error(
 			w,
 			"could not create processing job",
 			http.StatusInternalServerError,
 		)
+
 		return
 	}
 

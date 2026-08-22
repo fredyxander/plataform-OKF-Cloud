@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/fredyxander/okf-platform/backend/internal/domain"
 )
@@ -107,6 +108,74 @@ func (db *DB) GetJobByIDForProcessing(id string) (*domain.Job, error) {
 
 	if err != nil {
 		return nil, fmt.Errorf("get job for processing: %w", err)
+	}
+
+	return j, nil
+}
+
+func (db *DB) ClaimJobForProcessing(
+	id string,
+	staleBefore time.Time,
+) (*domain.Job, error) {
+	j := &domain.Job{}
+
+	err := db.conn.QueryRow(`
+		UPDATE jobs
+		SET status = $1,
+		    error_message = NULL
+		WHERE id = $2
+		  AND (
+		        status = $3
+		        OR (
+		            status = $1
+		            AND updated_at < $4
+		        )
+		      )
+		RETURNING id, document_id, owner_id, status, idempotency_key,
+		          error_message, created_at, updated_at`,
+		domain.JobStatusProcessing,
+		id,
+		domain.JobStatusQueued,
+		staleBefore,
+	).Scan(
+		&j.ID,
+		&j.DocumentID,
+		&j.OwnerID,
+		&j.Status,
+		&j.IdempotencyKey,
+		&j.ErrorMessage,
+		&j.CreatedAt,
+		&j.UpdatedAt,
+	)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		var exists bool
+
+		checkErr := db.conn.QueryRow(`
+			SELECT EXISTS (
+				SELECT 1
+				FROM jobs
+				WHERE id = $1
+			)`,
+			id,
+		).Scan(&exists)
+
+		if checkErr != nil {
+			return nil, fmt.Errorf(
+				"check job existence after failed claim: %w",
+				checkErr,
+			)
+		}
+
+		if !exists {
+			return nil, ErrNotFound
+		}
+
+		return nil, ErrJobNotClaimable
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("claim job for processing: %w", err)
 	}
 
 	return j, nil

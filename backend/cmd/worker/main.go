@@ -189,6 +189,39 @@ func main() {
 			continue
 		}
 
+		// rechazo de mismo job entre dos workers, solo uno toma el job y lo procesa.
+		staleBefore := time.Now().Add(-5 * time.Minute)
+
+		claimedJob, err := db.ClaimJobForProcessing(
+			job.JobID,
+			staleBefore,
+		)
+		if err != nil {
+			log.Printf(
+				"could not claim job %s for processing: %v",
+				job.JobID,
+				err,
+			)
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf(
+					"could not nack unclaimable job %s: %v",
+					job.JobID,
+					nackErr,
+				)
+			}
+
+			continue
+		}
+
+		persistedJob = claimedJob
+
+		log.Printf(
+			"job %s claimed for processing",
+			persistedJob.ID,
+		)
+
+		// Carga document para converion
 		document, err := db.GetDocumentByID(
 			persistedJob.DocumentID,
 			persistedJob.OwnerID,
@@ -264,21 +297,6 @@ func main() {
 			document.ID,
 			len(content),
 		)
-
-		// Actualiza estado en postgres a processing del job
-		if err := db.UpdateJobStatus(
-			job.JobID,
-			domain.JobStatusProcessing,
-			nil,
-		); err != nil {
-			log.Printf("could not update job %s to processing: %v", job.JobID, err)
-
-			if nackErr := message.Nack(false, false); nackErr != nil {
-				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
-			}
-
-			continue
-		}
 
 		// TEMPORAL:
 		//

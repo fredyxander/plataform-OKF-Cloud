@@ -125,3 +125,180 @@ func TestJobRepository(t *testing.T) {
 		t.Fatalf("expected ErrNotFound for another owner, got %v", err)
 	}
 }
+
+//Test para que un job queued no pueda ser tomado por dos workers a la vez, el segundo en tomarlo debe fallar.
+func TestClaimJobForProcessingOnlyOnce(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	// 1. Crear owner.
+	user, err := db.CreateUser(
+		fmt.Sprintf("claim-job-test-%d@example.com", time.Now().UnixNano()),
+		"fake-hash-for-test",
+	)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	// 2. Crear documento.
+	document, err := db.CreateDocument(
+		user.ID,
+		"claim-job-test.txt",
+		fmt.Sprintf("documents/%d/claim-job-test.txt", time.Now().UnixNano()),
+		"plaintext",
+		100,
+	)
+	if err != nil {
+		t.Fatalf("create document: %v", err)
+	}
+
+	// 3. Crear Job. Debe comenzar en queued.
+	job, err := db.CreateJob(
+		document.ID,
+		user.ID,
+		fmt.Sprintf("claim-idempotency-%d", time.Now().UnixNano()),
+	)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	if job.Status != domain.JobStatusQueued {
+		t.Fatalf(
+			"expected initial status %s, got %s",
+			domain.JobStatusQueued,
+			job.Status,
+		)
+	}
+
+	// 4. Primer claim: debe funcionar.
+	staleBefore := time.Now().Add(-5 * time.Minute)
+
+	claimedJob, err := db.ClaimJobForProcessing(
+		job.ID,
+		staleBefore,
+	)
+	if err != nil {
+		t.Fatalf("first claim should succeed: %v", err)
+	}
+
+	if claimedJob.Status != domain.JobStatusProcessing {
+		t.Fatalf(
+			"expected claimed job status %s, got %s",
+			domain.JobStatusProcessing,
+			claimedJob.Status,
+		)
+	}
+
+	// 5. Segundo claim: debe fallar porque el Job
+	// ya no está en estado queued.
+	_, err = db.ClaimJobForProcessing(
+		job.ID,
+		staleBefore,
+	)
+	if !errors.Is(err, ErrJobNotClaimable) {
+		t.Fatalf(
+			"second claim should fail with ErrJobNotClaimable, got %v",
+			err,
+		)
+	}
+
+	_, err = db.ClaimJobForProcessing(
+		"00000000-0000-0000-0000-000000000000",
+		time.Now().Add(-5*time.Minute),
+	)
+
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf(
+			"nonexistent job should fail with ErrNotFound, got %v",
+			err,
+		)
+	}
+}
+
+func TestClaimJobForProcessingRecoversStaleJob(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	// 1. Crear owner.
+	user, err := db.CreateUser(
+		fmt.Sprintf("stale-job-test-%d@example.com", time.Now().UnixNano()),
+		"fake-hash-for-test",
+	)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	// 2. Crear documento.
+	document, err := db.CreateDocument(
+		user.ID,
+		"stale-job-test.txt",
+		fmt.Sprintf("documents/%d/stale-job-test.txt", time.Now().UnixNano()),
+		"plaintext",
+		100,
+	)
+	if err != nil {
+		t.Fatalf("create document: %v", err)
+	}
+
+	// 3. Crear Job inicialmente queued.
+	job, err := db.CreateJob(
+		document.ID,
+		user.ID,
+		fmt.Sprintf("stale-idempotency-%d", time.Now().UnixNano()),
+	)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	// 4. Primer claim: queued -> processing.
+	claimedJob, err := db.ClaimJobForProcessing(
+		job.ID,
+		time.Now().Add(-5*time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("first claim should succeed: %v", err)
+	}
+
+	if claimedJob.Status != domain.JobStatusProcessing {
+		t.Fatalf(
+			"expected processing status, got %s",
+			claimedJob.Status,
+		)
+	}
+
+	// 5. Intentar reclamarlo considerándolo stale solo si lleva
+	// más de 5 minutos en processing.
+	//
+	// Acaba de ser actualizado, así que NO debería poder reclamarse.
+	_, err = db.ClaimJobForProcessing(
+		job.ID,
+		time.Now().Add(-5*time.Minute),
+	)
+
+	if !errors.Is(err, ErrJobNotClaimable) {
+		t.Fatalf(
+			"recent processing job should not be claimable, got %v",
+			err,
+		)
+	}
+
+	// 6. Ahora usamos un staleBefore futuro.
+	//
+	// Esto simula que ha pasado suficiente tiempo:
+	// updated_at < staleBefore será verdadero.
+	recoveredJob, err := db.ClaimJobForProcessing(
+		job.ID,
+		time.Now().Add(5*time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("stale processing job should be claimable: %v", err)
+	}
+
+	if recoveredJob.Status != domain.JobStatusProcessing {
+		t.Fatalf(
+			"expected recovered job status %s, got %s",
+			domain.JobStatusProcessing,
+			recoveredJob.Status,
+		)
+	}
+}

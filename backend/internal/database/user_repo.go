@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("not found")
+	ErrNotFound = errors.New("not found")
 	ErrAlreadyExists = errors.New("already exists")
+	ErrJobNotClaimable = errors.New("job not claimable")
 )
 
 func (db *DB) CreateUser(email, passwordHash string) (*domain.User, error) {
