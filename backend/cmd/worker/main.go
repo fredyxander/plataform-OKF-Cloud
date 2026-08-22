@@ -1,15 +1,20 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/fredyxander/okf-platform/backend/internal/config"
 	"github.com/fredyxander/okf-platform/backend/internal/database"
 	"github.com/fredyxander/okf-platform/backend/internal/domain"
+	"github.com/fredyxander/okf-platform/backend/internal/okf"
 	"github.com/fredyxander/okf-platform/backend/internal/queue"
+	"github.com/fredyxander/okf-platform/backend/internal/storage"
 )
 
 func main() {
@@ -43,6 +48,41 @@ func main() {
 	defer db.Close()
 
 	log.Println("Database connected")
+
+	// Conexión a MinIO.
+	minioEndpoint := os.Getenv("MINIO_ENDPOINT")
+	minioAccessKey := os.Getenv("MINIO_ACCESS_KEY")
+	minioSecretKey := os.Getenv("MINIO_SECRET_KEY")
+	minioBucket := os.Getenv("MINIO_BUCKET")
+
+	if minioEndpoint == "" ||
+		minioAccessKey == "" ||
+		minioSecretKey == "" ||
+		minioBucket == "" {
+		log.Fatal("MinIO configuration is incomplete")
+	}
+
+	minioUseSSL, err := strconv.ParseBool(os.Getenv("MINIO_USE_SSL"))
+	if err != nil {
+		log.Fatalf("invalid MINIO_USE_SSL: %v", err)
+	}
+
+	minioStorage, err := storage.NewMinIO(
+		minioEndpoint,
+		minioAccessKey,
+		minioSecretKey,
+		minioUseSSL,
+		minioBucket,
+	)
+	if err != nil {
+		log.Fatalf("initialize MinIO client: %v", err)
+	}
+
+	if err := minioStorage.EnsureBucket(context.Background()); err != nil {
+		log.Fatalf("ensure MinIO bucket: %v", err)
+	}
+
+	log.Println("MinIO connected and bucket ready")
 
 	// 4. Nos suscribimos a la cola de trabajos.
 	messages, err := rabbitMQ.ConsumeJobs()
@@ -108,6 +148,101 @@ func main() {
 		// 8. Aquí empieza conceptualmente el procesamiento.
 		log.Printf("processing job: %s", job.JobID)
 
+		persistedJob, err := db.GetJobByIDForProcessing(job.JobID)
+		if err != nil {
+			log.Printf("could not load job %s: %v", job.JobID, err)
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
+		log.Printf(
+			"loaded job %s: document_id=%s owner_id=%s status=%s",
+			persistedJob.ID,
+			persistedJob.DocumentID,
+			persistedJob.OwnerID,
+			persistedJob.Status,
+		)
+
+		document, err := db.GetDocumentByID(
+			persistedJob.DocumentID,
+			persistedJob.OwnerID,
+		)
+		if err != nil {
+			log.Printf(
+				"could not load document %s for job %s: %v",
+				persistedJob.DocumentID,
+				persistedJob.ID,
+				err,
+			)
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
+		log.Printf(
+			"loaded document %s: filename=%s format=%s storage_key=%s",
+			document.ID,
+			document.Filename,
+			document.Format,
+			document.StorageKey,
+		)
+
+		object, err := minioStorage.GetObject(
+			context.Background(),
+			document.StorageKey,
+		)
+		if err != nil {
+			log.Printf(
+				"could not get document %s from MinIO: %v",
+				document.ID,
+				err,
+			)
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
+		content, err := io.ReadAll(object)
+		closeErr := object.Close()
+
+		if err != nil {
+			log.Printf(
+				"could not read document %s: %v",
+				document.ID,
+				err,
+			)
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
+		if closeErr != nil {
+			log.Printf(
+				"could not close document %s: %v",
+				document.ID,
+				closeErr,
+			)
+		}
+
+		log.Printf(
+			"document %s loaded from MinIO: %d bytes",
+			document.ID,
+			len(content),
+		)
+
 		// Actualiza estado en postgres a processing del job
 		if err := db.UpdateJobStatus(
 			job.JobID,
@@ -128,7 +263,46 @@ func main() {
 		// Simula una conversión documental que tarda 10 segundos.
 		// Esto nos permite detener la API y comprobar
 		// que el worker sigue trabajando independientemente.
-		time.Sleep(10 * time.Second)
+		// time.Sleep(10 * time.Second)
+		concepts, err := okf.Convert(
+			document.Filename,
+			document.Format,
+			content,
+		)
+		if err != nil {
+			errMsg := err.Error()
+
+			log.Printf(
+				"could not convert document %s for job %s: %v",
+				document.ID,
+				persistedJob.ID,
+				err,
+			)
+
+			if updateErr := db.UpdateJobStatus(
+				job.JobID,
+				domain.JobStatusFailed,
+				&errMsg,
+			); updateErr != nil {
+				log.Printf(
+					"could not update job %s to failed: %v",
+					job.JobID,
+					updateErr,
+				)
+			}
+
+			if nackErr := message.Nack(false, false); nackErr != nil {
+				log.Printf("could not nack job %s: %v", job.JobID, nackErr)
+			}
+
+			continue
+		}
+
+		log.Printf(
+			"document %s converted successfully: %d concepts",
+			document.ID,
+			len(concepts),
+		)
 
 		// Actualiza estado a completed en postgres
 		if err := db.UpdateJobStatus(

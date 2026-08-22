@@ -80,3 +80,34 @@ func (db *DB) ListJobsByOwner(ownerID string) ([]*domain.Job, error) {
 	}
 	return jobs, nil
 }
+
+func (db *DB) GetJobByIDForProcessing(id string) (*domain.Job, error) {
+	j := &domain.Job{}
+
+	err := db.conn.QueryRow(`
+		SELECT id, document_id, owner_id, status, idempotency_key,
+		       error_message, created_at, updated_at
+		FROM jobs
+		WHERE id = $1`,
+		id,
+	).Scan(
+		&j.ID,
+		&j.DocumentID,
+		&j.OwnerID,
+		&j.Status,
+		&j.IdempotencyKey,
+		&j.ErrorMessage,
+		&j.CreatedAt,
+		&j.UpdatedAt,
+	)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("get job for processing: %w", err)
+	}
+
+	return j, nil
+}
