@@ -155,25 +155,7 @@ func main() {
 	http.HandleFunc("GET /jobs",
 		httpapi.AuthMiddleware(
 			tokenManager,
-			func(w http.ResponseWriter, r *http.Request) {
-				ownerID, ok := httpapi.UserIDFromContext(r.Context())
-				if !ok {
-					http.Error(w, "unauthorized", http.StatusUnauthorized)
-					return
-				}
-
-				jobs, err := db.ListJobsByOwner(ownerID)
-				if err != nil {
-					http.Error(w, "could not list jobs", http.StatusInternalServerError)
-					return
-				}
-
-				w.Header().Set("Content-Type", "application/json")
-
-				if err := json.NewEncoder(w).Encode(jobs); err != nil {
-					return
-				}
-			},
+			jobHandler.List,
 		),
 	)
 

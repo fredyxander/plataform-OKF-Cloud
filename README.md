@@ -4,7 +4,7 @@ Multi-user web platform for asynchronous document processing and generation of b
 
 The project is developed as part of the Cloud Architecture course and focuses on applying cloud-native architectural principles such as stateless services, asynchronous processing, persistent external storage, containerization, scalability, and fault isolation.
 
-> **Current status:** Milestones 1–7 are completed and verified. The backend E2E flow, authentication/authorization, OKF bundle generation, idempotent redelivery handling, bounded retries, DLQ handling and partial-object cleanup are operational. Before starting the frontend, the remaining backend/rubric checklist is being completed.
+> **Current status:** the backend is complete and verified, and so is the pre-frontend rubric checklist. The E2E flow, authentication and owner isolation, OKF bundle generation with `valid / valid_with_warnings / invalid` classification, idempotent redelivery handling, bounded retries, DLQ handling and partial-object cleanup are all operational. The [API contract](#api-contract) the frontend will consume is defined and verified, and every rubric condition has a reproducible procedure in [Manual verification with curl](#manual-verification-with-curl). Next up is the functional frontend.
 
 ---
 
@@ -572,6 +572,133 @@ OKF_FAULT_INJECTION=drop-index docker compose up -d worker
 # upload a document, then check GET /jobs/{id} and GET /jobs/{id}/bundle
 docker compose up -d worker   # back to the normal pipeline
 ```
+
+---
+
+## API contract
+
+What the frontend consumes. Every endpoint below except `/auth/*` and `/health`
+requires `Authorization: Bearer <jwt>` and is scoped to the authenticated
+owner: a resource belonging to somebody else answers `404`, never `403`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/auth/register` | Create a user. |
+| `POST` | `/auth/login` | Exchange credentials for a JWT valid for 24 h. |
+| `POST` | `/documents` | Upload a document and start processing. Returns `202` immediately. |
+| `GET` | `/documents/{id}/download` | Retrieve the original document. |
+| `GET` | `/jobs` | List every job of the user. The general Jobs view. |
+| `GET` | `/jobs/{id}` | Follow one job. |
+| `GET` | `/jobs/{id}/bundle` | Download the bundle as a ZIP. |
+| `GET` | `/health` | Liveness, unauthenticated. |
+
+### Job states
+
+```text
+queued ──► processing ──┬──► completed     (terminal)
+      ▲                 │
+      └── retry ────────┴──► failed        (terminal)
+```
+
+`completed` and `failed` are terminal: the job will not change again. Both
+`GET /jobs` and `GET /jobs/{id}` carry a `terminal` boolean so a client never
+has to hardcode which states are final.
+
+### Following a job
+
+`POST /documents` answers before any conversion happens:
+
+```json
+{ "document": { "id": "...", "filename": "manual.md", "...": "..." },
+  "jobId": "...",
+  "status": "queued" }
+```
+
+The client then polls `GET /jobs/{jobId}` until `terminal` is true. A few
+seconds between polls is enough; there is no push channel.
+
+```json
+{
+  "id": "...",
+  "status": "completed",
+  "terminal": true,
+  "error_message": null,
+  "bundle": {
+    "id": "...",
+    "concept_count": 4,
+    "is_valid": true,
+    "validation": { "status": "valid", "warnings": [], "errors": [] },
+    "download_url": "/jobs/<id>/bundle"
+  }
+}
+```
+
+What to render, by outcome:
+
+| `status` | `terminal` | `bundle` | What the client shows |
+| --- | --- | --- | --- |
+| `queued` | `false` | `null` | Waiting; keep polling. |
+| `processing` | `false` | `null` | In progress; keep polling. |
+| `completed` | `true` | present, `validation.status` `valid` or `valid_with_warnings` | Success. Offer `download_url`; surface `validation.warnings` if any. |
+| `failed` | `true` | present with `validation.status: invalid`, or `null` | Failure. Show `error_message`, and `validation.errors` when the bundle was rejected. |
+
+**`download_url` is the authority on downloadability.** It is emitted only when
+the job completed *and* the bundle passed validation. Its absence means there
+is nothing to download — do not build the URL by hand, or the client will
+offer a download that answers `409`.
+
+A bundle with warnings is still downloadable: `valid_with_warnings` is a
+successful outcome, not a partial failure.
+
+### The Jobs list
+
+`GET /jobs` is normal navigation and exists independently of whether the client
+happens to be following a particular job. Notifying that one job finished never
+replaces it.
+
+Each entry carries the source filename and the bundle, so the view renders in a
+single request instead of one detail call per row:
+
+```json
+[
+  {
+    "id": "...",
+    "status": "completed",
+    "terminal": true,
+    "document": { "id": "...", "filename": "03-manual-tecnico.md", "format": "markdown" },
+    "bundle": {
+      "concept_count": 4,
+      "is_valid": true,
+      "validation": { "status": "valid", "warnings": [], "errors": [] },
+      "download_url": "/jobs/<id>/bundle"
+    },
+    "created_at": "...",
+    "updated_at": "..."
+  }
+]
+```
+
+Guarantees the client can rely on:
+
+- newest first, ordered by `created_at` then `id`, so rows do not swap places
+  between refreshes;
+- always a JSON array — a user with no jobs gets `[]`, never `null`;
+- only the authenticated owner's jobs;
+- `bundle` is `null` until one exists.
+
+### Error responses
+
+| Status | When |
+| --- | --- |
+| `400` | Missing job id or malformed request. |
+| `401` | Absent, malformed or expired token. |
+| `404` | The resource does not exist **or** belongs to another user. |
+| `409` | The bundle exists but validation rejected it. |
+| `413` | Upload above 10 MB. |
+| `415` | Content type other than `text/plain` or `text/markdown`. |
+
+`404` deliberately covers both "not found" and "not yours": the API does not
+reveal that a foreign resource exists.
 
 ---
 
@@ -1160,7 +1287,7 @@ the loop stops after the first job.
 3. ~~Run and document the six verifiable conditions required by the project specification.~~ **Done** — see [The six verifiable conditions](#the-six-verifiable-conditions).
 4. ~~Verify that a clean environment can be configured and started using only this README, `.env.example`, and `docker compose up -d --build`.~~ **Done** — see [Verifying from a clean environment](#verifying-from-a-clean-environment).
 5. ~~Demonstrate horizontal worker scaling with at least two workers while preserving `prefetch = 1`, atomic claiming and no duplicate final bundle.~~ **Done** — see [Scaling workers horizontally](#11-scaling-workers-horizontally).
-6. Define and verify the completion-notification/status contract around `jobId` so the frontend can detect completion/failure and redirect to the bundle when appropriate. A normal Jobs list/view must remain available independently of notifications.
+6. ~~Define and verify the completion-notification/status contract around `jobId`.~~ **Done** — see [API contract](#api-contract).
 
 ### Bonus / optional if time remains
 
@@ -1282,7 +1409,7 @@ The HTTP request does not execute the conversion. The API returns the created `j
 - Six specification verification scenarios ✅.
 - README reproducibility from a clean environment ✅.
 - Two-worker scalability demonstration ✅.
-- `jobId` completion/status notification contract while preserving a general Jobs view.
+- `jobId` completion/status notification contract while preserving a general Jobs view ✅.
 
 ### Milestone 8 — Functional frontend ⏳
 
@@ -1335,14 +1462,14 @@ Bundle in MinIO + metadata in PostgreSQL
 COMPLETED / FAILED
 ```
 
-**Backend/rubric closure is in progress**, five of six items done: the
-validation classification, the conversion review against representative
-document configurations, the six verifiable conditions — each with a
-reproducible procedure in [Manual verification with curl](#manual-verification-with-curl)
-— reproducibility from a clean environment, and horizontal worker scaling.
+**Backend/rubric closure is complete.** All six items are done: the validation
+classification, the conversion review against representative document
+configurations, the six verifiable conditions — each with a reproducible
+procedure in [Manual verification with curl](#manual-verification-with-curl) —
+reproducibility from a clean environment, horizontal worker scaling, and the
+job-following contract documented in [API contract](#api-contract).
 
-Next: the `jobId` notification contract the frontend will consume. The frontend
-starts only after it has been defined and verified.
+Next: Milestone 8, the functional frontend.
 
 ---
 

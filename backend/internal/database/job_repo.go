@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lib/pq"
+
 	"github.com/fredyxander/okf-platform/backend/internal/domain"
 )
 
@@ -51,34 +53,96 @@ func (db *DB) UpdateJobStatus(id string, status domain.JobStatus, errMsg *string
 	return nil
 }
 
-func (db *DB) ListJobsByOwner(ownerID string) ([]*domain.Job, error) {
+// ListJobsByOwner devuelve los Jobs del propietario junto con el
+// documento que los originó y el bundle que produjeron, si existe.
+//
+// Se resuelve en una sola consulta para que una vista de lista no tenga
+// que pedir el detalle de cada Job por separado.
+//
+// El orden es descendente por fecha de creación, con el id como
+// desempate: sin él, dos Jobs creados en el mismo instante podrían
+// alternar de posición entre consultas y la lista parpadearía.
+//
+// Devuelve siempre un slice no nulo: un propietario sin Jobs produce
+// una lista vacía, no null.
+func (db *DB) ListJobsByOwner(ownerID string) ([]*domain.JobListItem, error) {
 	rows, err := db.conn.Query(`
-		SELECT 
-		id, 
-		document_id, 
-		owner_id,
-		status,
-		idempotency_key, 
-		error_message, 
-		created_at, 
-		updated_at
-		FROM jobs WHERE owner_id = $1
-		ORDER BY created_at DESC`,
+		SELECT j.id, j.document_id, j.owner_id, j.status,
+		       j.idempotency_key, j.error_message,
+		       j.created_at, j.updated_at,
+		       d.filename, d.format,
+		       b.id, b.storage_key, b.is_valid, b.concept_count,
+		       b.validation_status, b.validation_warnings,
+		       b.validation_errors, b.published_at, b.created_at
+		FROM jobs j
+		JOIN documents d ON d.id = j.document_id
+		LEFT JOIN bundles b ON b.job_id = j.id
+		WHERE j.owner_id = $1
+		ORDER BY j.created_at DESC, j.id DESC`,
 		ownerID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
+
 	defer rows.Close()
 
-	var jobs []*domain.Job
+	jobs := make([]*domain.JobListItem, 0)
+
 	for rows.Next() {
-		j := &domain.Job{}
-		if err := rows.Scan(&j.ID, &j.DocumentID, &j.OwnerID, &j.Status, &j.IdempotencyKey, &j.ErrorMessage, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		item := &domain.JobListItem{}
+
+		// Las columnas del bundle llegan nulas mientras el Job no haya
+		// producido uno, así que se leen en tipos que admiten NULL.
+		var (
+			bundleID        sql.NullString
+			storageKey      sql.NullString
+			isValid         sql.NullBool
+			conceptCount    sql.NullInt64
+			validationState sql.NullString
+			warnings        []string
+			validationErrs  []string
+			publishedAt     *time.Time
+			bundleCreatedAt sql.NullTime
+		)
+
+		if err := rows.Scan(
+			&item.ID, &item.DocumentID, &item.OwnerID, &item.Status,
+			&item.IdempotencyKey, &item.ErrorMessage,
+			&item.CreatedAt, &item.UpdatedAt,
+			&item.DocumentFilename, &item.DocumentFormat,
+			&bundleID, &storageKey, &isValid, &conceptCount,
+			&validationState, pq.Array(&warnings),
+			pq.Array(&validationErrs), &publishedAt, &bundleCreatedAt,
+		); err != nil {
 			return nil, fmt.Errorf("scan job: %w", err)
 		}
-		jobs = append(jobs, j)
+
+		if bundleID.Valid {
+			item.Bundle = &domain.Bundle{
+				ID:           bundleID.String,
+				JobID:        item.ID,
+				OwnerID:      item.OwnerID,
+				StorageKey:   storageKey.String,
+				IsValid:      isValid.Bool,
+				ConceptCount: int(conceptCount.Int64),
+				Validation: domain.BundleValidation{
+					Status:   domain.BundleValidationStatus(validationState.String),
+					Warnings: warnings,
+					Errors:   validationErrs,
+				},
+				PublishedAt: publishedAt,
+				CreatedAt:   bundleCreatedAt.Time,
+			}
+		}
+
+		jobs = append(jobs, item)
 	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+
 	return jobs, nil
 }
 

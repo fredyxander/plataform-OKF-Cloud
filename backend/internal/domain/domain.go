@@ -28,6 +28,14 @@ const (
 	JobStatusFailed     JobStatus = "failed"
 )
 
+// IsTerminal indica si el Job ya no volverá a cambiar de estado.
+//
+// Es el criterio de parada del seguimiento: un cliente consulta el Job
+// mientras no sea terminal y deja de hacerlo en cuanto lo sea.
+func (s JobStatus) IsTerminal() bool {
+	return s == JobStatusCompleted || s == JobStatusFailed
+}
+
 type Job struct {
 	ID             string    `json:"id"`
 	DocumentID     string    `json:"document_id"`
@@ -37,6 +45,21 @@ type Job struct {
 	ErrorMessage   *string   `json:"error_message,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// JobListItem es un Job con el contexto mínimo que necesita una vista
+// de lista: qué documento lo originó y si ya produjo un bundle.
+//
+// Existe para que el listado se resuelva en una sola consulta, en lugar
+// de obligar al cliente a pedir el detalle de cada Job por separado.
+type JobListItem struct {
+	Job
+
+	DocumentFilename string
+	DocumentFormat   string
+
+	// Bundle es nil mientras el Job no haya producido uno.
+	Bundle *Bundle
 }
 
 type Bundle struct {

@@ -1010,7 +1010,7 @@ Con esto M7 se considera cerrado para el alcance académico del proyecto.
 
 ## Checklist obligatorio previo a M8 --- cierre backend y rúbrica
 
-**EN CURSO.** Se realizará antes de comenzar el frontend para terminar primero el backend y dejar claros los contratos que consumirá React.
+**COMPLETADO Y VERIFICADO.** Los seis puntos quedaron cerrados; el backend está listo contra la rúbrica y los contratos que consumirá React están definidos y probados.
 
 Orden acordado:
 
@@ -1019,7 +1019,7 @@ Orden acordado:
 3. **Seis condiciones verificables del PDF. COMPLETADO Y VERIFICADO** (ver sección 8.3).
 4. **Reproducibilidad desde entorno limpio. COMPLETADO Y VERIFICADO** (ver sección 8.4).
 5. **Escalabilidad con dos workers. COMPLETADO Y VERIFICADO** (ver sección 8.5).
-6. **Contrato de notificación de finalización.** Definir y probar el comportamiento que utilizará el frontend para seguir un `jobId`, detectar `completed`/`failed` y permitir redirigir al usuario a la descarga del bundle. Debe mantenerse también una vista/listado general de Jobs; la notificación no reemplaza la navegación a `/jobs`.
+6. **Contrato de seguimiento y notificación. COMPLETADO Y VERIFICADO** (ver sección 8.7).
 
 ### 8.1 Clasificación de validación del bundle --- COMPLETADO Y VERIFICADO
 
@@ -1642,6 +1642,102 @@ video que exige declarar limitaciones conocidas:
     idempotencia suministrada por el cliente; mientras tanto, el frontend debe
     deshabilitar el control de subida tras el primer clic.
 
+### 8.7 Contrato de seguimiento y notificación --- COMPLETADO Y VERIFICADO
+
+Punto 6 del checklist, y último antes de M8. Se definió y verificó lo que el
+frontend consumirá para seguir un `jobId`, detectar el final y llevar al
+usuario a la descarga, conservando la vista general de Jobs.
+
+#### Estado terminal explícito
+
+`JobStatus.IsTerminal()` distingue los estados finales de los transitorios, y
+tanto `GET /jobs` como `GET /jobs/{id}` exponen un booleano `terminal`.
+
+``` text
+queued, processing   -> terminal: false   (seguir consultando)
+completed, failed    -> terminal: true    (dejar de consultar)
+```
+
+El cliente no tiene que codificar por su cuenta qué estados son finales: si
+mañana se añadiera un estado, el criterio de parada seguiría siendo correcto.
+
+#### `download_url` como única autoridad
+
+La URL de descarga se emite solo cuando el Job terminó correctamente **y** la
+validación permitió publicar el bundle. Su ausencia significa que no hay nada
+que descargar. El README lo dice de forma explícita: el cliente no debe
+construir la URL a mano, porque acabaría ofreciendo una descarga que responde
+`409`.
+
+Un bundle con advertencias sigue siendo descargable: `valid_with_warnings` es
+un resultado exitoso, no un fallo parcial.
+
+#### `GET /jobs` reescrito
+
+Era un closure dentro de `main.go` que devolvía `[]*domain.Job` en crudo. Tenía
+tres problemas para una vista de lista:
+
+1.  **Sin nombre de documento.** El usuario habría visto una lista de UUIDs sin
+    forma de reconocer qué subió.
+2.  **Sin bundle.** Pintar un botón de descarga habría exigido una petición de
+    detalle por fila.
+3.  **Devolvía `null` con cero Jobs**, no `[]`. Un cliente que recorriera la
+    respuesta habría fallado con un usuario nuevo.
+
+Ahora es `JobHandler.List` y `ListJobsByOwner` resuelve en una sola consulta el
+join de `jobs`, `documents` y `bundles`. Cada entrada trae el nombre y formato
+del documento, el estado, el flag `terminal`, el `error_message` y el bundle
+con su clasificación y su `download_url` cuando corresponde.
+
+Garantías del listado, documentadas para que el frontend pueda apoyarse en
+ellas:
+
+-   orden descendente por `created_at` con `id` como desempate, para que las
+    filas no se intercambien entre refrescos y la lista no parpadee;
+-   siempre un array JSON, nunca `null`;
+-   solo los Jobs del propietario autenticado;
+-   `bundle` es `null` mientras no exista.
+
+La vista general de Jobs es navegación normal y existe con independencia de que
+el cliente esté siguiendo un Job concreto: notificar que uno terminó no la
+sustituye.
+
+#### Verificación
+
+Bucle de seguimiento tal como lo hará el frontend, con retardo de 15 s:
+
+``` text
+23:05:03  subida aceptada, jobId=018850e8-...
+23:05:04  status=processing terminal=False download=-
+23:05:09  status=processing terminal=False download=-
+23:05:15  status=processing terminal=False download=-
+23:05:20  status=completed  terminal=True  download=/jobs/018850e8-.../bundle
+```
+
+Camino fallido con bundle rechazado, en detalle y en listado:
+
+``` text
+status=failed  terminal=true
+error_message="bundle validation failed: bundle is missing index.md"
+bundle.validation.status=invalid  (sin download_url)
+```
+
+Usuario nuevo sin Jobs:
+
+``` text
+GET /jobs -> []
+```
+
+Tests añadidos: flag `terminal` para los cuatro estados, serialización de la
+lista vacía como `[]`, listado con documento y bundle, listado de un bundle
+rechazado sin descarga, y contra PostgreSQL real el join con documento, el
+bundle publicado con su clasificación y la lista vacía no nula.
+
+#### Cierre del checklist
+
+Con esto los seis puntos del checklist previo a M8 quedan completados y
+verificados. El backend está cerrado contra la rúbrica.
+
 ## Milestone 8 --- Frontend funcional
 
 **PENDIENTE.** Se inicia únicamente después del checklist previo de backend.
@@ -1746,7 +1842,7 @@ Antes de iniciar M8 se completará el **checklist de cierre backend y rúbrica**
 3. ~~ejecutar y documentar las seis condiciones verificables del PDF~~ --- COMPLETADO (sección 8.3);
 4. ~~verificar README + `.env.example` desde un entorno limpio~~ --- COMPLETADO (sección 8.4);
 5. ~~demostrar procesamiento con dos workers y ausencia de duplicados~~ --- COMPLETADO (sección 8.5);
-6. definir/probar el contrato de seguimiento y notificación por `jobId`, conservando también la vista general de Jobs;
+6. ~~definir/probar el contrato de seguimiento y notificación por `jobId`~~ --- COMPLETADO (sección 8.7);
 7. iniciar M8 --- frontend funcional.
 
 Los desarrollos opcionales quedan fuera de esta ruta crítica y solo se realizarán si sobra tiempo.
@@ -1812,9 +1908,9 @@ Autenticación/autorización      ██████████  completa para 
 Documentos + MinIO              ██████████  completo y verificado
 Pipeline OKF                    ██████████  completo y verificado E2E
 Confiabilidad M7                ██████████  completa y verificada
-Cierre backend contra rúbrica   █████████░  en curso (5/6)
+Cierre backend contra rúbrica   ██████████  completo (6/6)
 Frontend funcional M8           ░░░░░░░░░░  pendiente
 Entrega/sustentación            ░░░░░░░░░░  pendiente
 ```
 
-**Siguiente acción:** punto 6 del checklist --- definir y probar el contrato de seguimiento y notificación por `jobId` que consumirá el frontend: cómo detecta `completed`/`failed`, cómo redirige a la descarga del bundle y cómo se conserva la vista general de Jobs. Es el último punto antes de M8.
+**Siguiente acción:** Milestone 8 --- frontend funcional. El checklist previo está cerrado: la clasificación de validación, la conversión, las seis condiciones verificables, la reproducibilidad desde entorno limpio, la escalabilidad con dos workers y el contrato de seguimiento están completados y verificados. El contrato que consumirá React está documentado en la sección *API contract* del README.

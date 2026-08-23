@@ -111,6 +111,72 @@ func TestJobRepository(t *testing.T) {
 		t.Fatal("expected at least one job")
 	}
 
+	// 7.1. El listado trae el documento de origen, para que una vista
+	//      de lista no muestre solo UUIDs.
+	listed := jobs[0]
+
+	if listed.DocumentFilename != "job-test.txt" {
+		t.Errorf(
+			"expected the source filename, got %q",
+			listed.DocumentFilename,
+		)
+	}
+
+	if listed.DocumentFormat != "plaintext" {
+		t.Errorf("expected the format, got %q", listed.DocumentFormat)
+	}
+
+	// 7.2. Sin bundle todavía, el campo llega nil y no falla el escaneo
+	//      de las columnas nulas del LEFT JOIN.
+	if listed.Bundle != nil {
+		t.Errorf("expected no bundle yet, got %v", listed.Bundle)
+	}
+
+	// 7.3. Una vez publicado, el listado lo incluye con su clasificación.
+	if _, err := db.CreateBundle(
+		job.ID,
+		user.ID,
+		fmt.Sprintf("bundles/%s/bundle.zip", job.ID),
+		2,
+		domain.BundleValidation{
+			Status:   domain.BundleValidWithWarnings,
+			Warnings: []string{"concept concept-02.md has no content"},
+			Errors:   []string{},
+		},
+	); err != nil {
+		t.Fatalf("create bundle: %v", err)
+	}
+
+	jobs, err = db.ListJobsByOwner(user.ID)
+	if err != nil {
+		t.Fatalf("list jobs after bundle: %v", err)
+	}
+
+	listed = jobs[0]
+
+	if listed.Bundle == nil {
+		t.Fatal("expected the published bundle in the listing")
+	}
+
+	if listed.Bundle.ConceptCount != 2 {
+		t.Errorf("expected 2 concepts, got %d", listed.Bundle.ConceptCount)
+	}
+
+	if listed.Bundle.Validation.Status != domain.BundleValidWithWarnings {
+		t.Errorf(
+			"expected %s, got %s",
+			domain.BundleValidWithWarnings,
+			listed.Bundle.Validation.Status,
+		)
+	}
+
+	if len(listed.Bundle.Validation.Warnings) != 1 {
+		t.Errorf(
+			"expected the warnings in the listing, got %v",
+			listed.Bundle.Validation.Warnings,
+		)
+	}
+
 	// 8. Comprobar aislamiento.
 	otherUser, err := db.CreateUser(
 		fmt.Sprintf("job-other-%d@example.com", time.Now().UnixNano()),
@@ -123,6 +189,20 @@ func TestJobRepository(t *testing.T) {
 	_, err = db.GetJobByID(job.ID, otherUser.ID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for another owner, got %v", err)
+	}
+
+	// 8.1. Un propietario sin Jobs recibe una lista vacía, nunca nil.
+	otherJobs, err := db.ListJobsByOwner(otherUser.ID)
+	if err != nil {
+		t.Fatalf("list jobs of second owner: %v", err)
+	}
+
+	if otherJobs == nil {
+		t.Fatal("expected an empty slice, got nil")
+	}
+
+	if len(otherJobs) != 0 {
+		t.Fatalf("expected no jobs for another owner, got %d", len(otherJobs))
 	}
 }
 

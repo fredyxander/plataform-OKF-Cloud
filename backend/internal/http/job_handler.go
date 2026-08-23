@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/fredyxander/okf-platform/backend/internal/database"
 	"github.com/fredyxander/okf-platform/backend/internal/domain"
@@ -37,41 +38,128 @@ type BundleResponse struct {
 	DownloadURL  string                  `json:"download_url,omitempty"`
 }
 
+// JobDetailResponse es lo que consume el seguimiento de un Job.
+//
+// Terminal indica si el Job ya no cambiará: es el criterio de parada
+// del cliente, para que no tenga que codificar por su cuenta qué
+// estados son finales.
 type JobDetailResponse struct {
 	*domain.Job
-	Bundle *BundleResponse `json:"bundle"`
+	Terminal bool            `json:"terminal"`
+	Bundle   *BundleResponse `json:"bundle"`
 }
 
-func buildJobDetailResponse(
-	job *domain.Job,
+// JobListItemResponse es una entrada del listado general de Jobs.
+//
+// Incluye el nombre del documento porque una lista de UUIDs no permite
+// al usuario reconocer qué subió, y el bundle para poder ofrecer la
+// descarga sin pedir el detalle de cada Job.
+type JobListItemResponse struct {
+	ID           string           `json:"id"`
+	Status       domain.JobStatus `json:"status"`
+	Terminal     bool             `json:"terminal"`
+	ErrorMessage *string          `json:"error_message,omitempty"`
+	Document     DocumentSummary  `json:"document"`
+	Bundle       *BundleResponse  `json:"bundle"`
+	CreatedAt    time.Time        `json:"created_at"`
+	UpdatedAt    time.Time        `json:"updated_at"`
+}
+
+type DocumentSummary struct {
+	ID       string `json:"id"`
+	Filename string `json:"filename"`
+	Format   string `json:"format"`
+}
+
+// buildBundleResponse traduce la metadata del bundle al contrato HTTP.
+//
+// La URL de descarga solo se emite cuando el Job terminó correctamente
+// y la validación permitió publicar el bundle: su ausencia es la señal
+// de que no hay nada que descargar.
+func buildBundleResponse(
+	jobID string,
+	status domain.JobStatus,
 	bundle *domain.Bundle,
-) JobDetailResponse {
-	response := JobDetailResponse{
-		Job:    job,
-		Bundle: nil,
-	}
-
+) *BundleResponse {
 	if bundle == nil {
-		return response
+		return nil
 	}
 
-	response.Bundle = &BundleResponse{
+	response := &BundleResponse{
 		ID:           bundle.ID,
 		ConceptCount: bundle.ConceptCount,
 		IsValid:      bundle.IsValid,
 		Validation:   bundle.Validation,
 	}
 
-	// La descarga solo se ofrece cuando el Job terminó correctamente y
-	// la validación permitió publicar el bundle.
-	if job.Status == domain.JobStatusCompleted && bundle.IsValid {
-		response.Bundle.DownloadURL = fmt.Sprintf(
-			"/jobs/%s/bundle",
-			job.ID,
-		)
+	if status == domain.JobStatusCompleted && bundle.IsValid {
+		response.DownloadURL = fmt.Sprintf("/jobs/%s/bundle", jobID)
 	}
 
 	return response
+}
+
+func buildJobDetailResponse(
+	job *domain.Job,
+	bundle *domain.Bundle,
+) JobDetailResponse {
+	return JobDetailResponse{
+		Job:      job,
+		Terminal: job.Status.IsTerminal(),
+		Bundle:   buildBundleResponse(job.ID, job.Status, bundle),
+	}
+}
+
+func buildJobListResponse(
+	items []*domain.JobListItem,
+) []JobListItemResponse {
+	// Nunca null: una lista vacía debe serializarse como [].
+	response := make([]JobListItemResponse, 0, len(items))
+
+	for _, item := range items {
+		response = append(response, JobListItemResponse{
+			ID:           item.ID,
+			Status:       item.Status,
+			Terminal:     item.Status.IsTerminal(),
+			ErrorMessage: item.ErrorMessage,
+			Document: DocumentSummary{
+				ID:       item.DocumentID,
+				Filename: item.DocumentFilename,
+				Format:   item.DocumentFormat,
+			},
+			Bundle:    buildBundleResponse(item.ID, item.Status, item.Bundle),
+			CreatedAt: item.CreatedAt,
+			UpdatedAt: item.UpdatedAt,
+		})
+	}
+
+	return response
+}
+
+// List devuelve el listado general de Jobs del usuario autenticado.
+//
+// Es la navegación normal de la aplicación y existe con independencia
+// de que el cliente esté siguiendo un Job concreto.
+func (h *JobHandler) List(w http.ResponseWriter, r *http.Request) {
+	ownerID, ok := UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	items, err := h.db.ListJobsByOwner(ownerID)
+	if err != nil {
+		log.Printf("could not list jobs of owner %s: %v", ownerID, err)
+		http.Error(w, "could not list jobs", http.StatusInternalServerError)
+
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(w).Encode(buildJobListResponse(items)); err != nil {
+		return
+	}
 }
 
 func (h *JobHandler) Get(w http.ResponseWriter, r *http.Request) {

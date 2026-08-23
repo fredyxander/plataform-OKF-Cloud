@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/fredyxander/okf-platform/backend/internal/domain"
@@ -194,5 +195,164 @@ func TestBuildJobDetailFailed(t *testing.T) {
 			"unexpected error message: %s",
 			*response.ErrorMessage,
 		)
+	}
+}
+
+// El seguimiento se detiene en los estados terminales: el cliente no
+// debe tener que codificar por su cuenta cuáles lo son.
+func TestJobDetailTerminalFlag(t *testing.T) {
+	cases := []struct {
+		status   domain.JobStatus
+		terminal bool
+	}{
+		{domain.JobStatusQueued, false},
+		{domain.JobStatusProcessing, false},
+		{domain.JobStatusCompleted, true},
+		{domain.JobStatusFailed, true},
+	}
+
+	for _, c := range cases {
+		job := &domain.Job{ID: "job-1", Status: c.status}
+
+		response := buildJobDetailResponse(job, nil)
+
+		if response.Terminal != c.terminal {
+			t.Errorf(
+				"status %s: expected terminal=%v, got %v",
+				c.status,
+				c.terminal,
+				response.Terminal,
+			)
+		}
+	}
+}
+
+// Una lista vacía debe serializarse como [] y nunca como null: un
+// cliente que recorra la respuesta fallaría con null.
+func TestJobListEmptySerializesAsArray(t *testing.T) {
+	encoded, err := json.Marshal(buildJobListResponse(nil))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	if string(encoded) != "[]" {
+		t.Fatalf("expected [], got %s", encoded)
+	}
+}
+
+// El listado debe bastar para pintar la vista de Jobs sin pedir el
+// detalle de cada uno.
+func TestJobListCarriesDocumentAndBundle(t *testing.T) {
+	items := []*domain.JobListItem{
+		{
+			Job: domain.Job{
+				ID:         "job-completed",
+				DocumentID: "doc-1",
+				Status:     domain.JobStatusCompleted,
+			},
+			DocumentFilename: "manual.md",
+			DocumentFormat:   "markdown",
+			Bundle: &domain.Bundle{
+				ID:           "bundle-1",
+				IsValid:      true,
+				ConceptCount: 4,
+				Validation: domain.BundleValidation{
+					Status: domain.BundleValid,
+				},
+			},
+		},
+		{
+			Job: domain.Job{
+				ID:         "job-processing",
+				DocumentID: "doc-2",
+				Status:     domain.JobStatusProcessing,
+			},
+			DocumentFilename: "notas.txt",
+			DocumentFormat:   "plaintext",
+		},
+	}
+
+	response := buildJobListResponse(items)
+
+	if len(response) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(response))
+	}
+
+	completed := response[0]
+
+	if completed.Document.Filename != "manual.md" {
+		t.Errorf("expected the filename, got %q", completed.Document.Filename)
+	}
+
+	if !completed.Terminal {
+		t.Error("a completed job must be terminal")
+	}
+
+	if completed.Bundle == nil {
+		t.Fatal("expected the bundle of a completed job")
+	}
+
+	if completed.Bundle.DownloadURL != "/jobs/job-completed/bundle" {
+		t.Errorf("unexpected download URL: %q", completed.Bundle.DownloadURL)
+	}
+
+	processing := response[1]
+
+	if processing.Terminal {
+		t.Error("a processing job must not be terminal")
+	}
+
+	if processing.Bundle != nil {
+		t.Error("a processing job has no bundle yet")
+	}
+}
+
+// Un Job fallido cuyo bundle fue rechazado se lista con su validación
+// pero sin ofrecer descarga.
+func TestJobListRejectedBundleHasNoDownload(t *testing.T) {
+	message := "bundle validation failed: bundle is missing index.md"
+
+	items := []*domain.JobListItem{
+		{
+			Job: domain.Job{
+				ID:           "job-failed",
+				DocumentID:   "doc-3",
+				Status:       domain.JobStatusFailed,
+				ErrorMessage: &message,
+			},
+			DocumentFilename: "roto.md",
+			DocumentFormat:   "markdown",
+			Bundle: &domain.Bundle{
+				ID:      "bundle-3",
+				IsValid: false,
+				Validation: domain.BundleValidation{
+					Status: domain.BundleInvalid,
+					Errors: []string{"bundle is missing index.md"},
+				},
+			},
+		},
+	}
+
+	item := buildJobListResponse(items)[0]
+
+	if !item.Terminal {
+		t.Error("a failed job must be terminal")
+	}
+
+	if item.ErrorMessage == nil {
+		t.Fatal("expected the error message in the list")
+	}
+
+	if item.Bundle == nil {
+		t.Fatal("expected the rejected bundle to be reported")
+	}
+
+	if item.Bundle.DownloadURL != "" {
+		t.Errorf("a rejected bundle must not be downloadable, got %q",
+			item.Bundle.DownloadURL)
+	}
+
+	if item.Bundle.Validation.Status != domain.BundleInvalid {
+		t.Errorf("unexpected validation status: %s", item.Bundle.Validation.Status)
 	}
 }
