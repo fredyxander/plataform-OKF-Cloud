@@ -72,9 +72,9 @@ func TestBuildBundleIndexNavigationAndData(t *testing.T) {
 	index := bundleFile(t, bundle, "index.md")
 
 	for _, expected := range []string{
-		"- Source: manual.md",
-		"- Format: markdown",
-		"- Concepts: 3",
+		"- Documento de origen: manual.md",
+		"- Formato: markdown",
+		"- Conceptos: 3",
 	} {
 		if !strings.Contains(index, expected) {
 			t.Errorf("index.md is missing %q:\n%s", expected, index)
@@ -106,14 +106,14 @@ func TestBuildBundleLogTraceability(t *testing.T) {
 	conversionLog := bundleFile(t, bundle, "log.md")
 
 	for _, expected := range []string{
-		"- File: manual.md",
-		"- Format: markdown",
-		"## Operations",
-		"Segmented the document by Markdown heading level H1",
-		"## Detected units",
+		"- Archivo: manual.md",
+		"- Formato: markdown",
+		"## Operaciones",
+		"Se segmentó el documento por el nivel de encabezado Markdown H1",
+		"## Unidades detectadas",
 		"1. Uno -> concept-01.md",
 		"2. Dos -> concept-02.md",
-		"Total units detected: 2",
+		"Total de unidades detectadas: 2",
 	} {
 		if !strings.Contains(conversionLog, expected) {
 			t.Errorf("log.md is missing %q:\n%s", expected, conversionLog)
@@ -154,7 +154,7 @@ func TestBuildBundleLabelsUntitledUnits(t *testing.T) {
 
 	index := bundleFile(t, bundle, "index.md")
 
-	if !strings.Contains(index, "[Untitled unit](concept-01.md)") {
+	if !strings.Contains(index, "[Unidad sin título](concept-01.md)") {
 		t.Errorf("expected a fallback label:\n%s", index)
 	}
 
@@ -176,9 +176,9 @@ func TestAppendValidationLog(t *testing.T) {
 	conversionLog := bundleFile(t, bundle, "log.md")
 
 	for _, expected := range []string{
-		"## Validation",
-		"- Result: valid",
-		"- Warnings: none.",
+		"## Validación",
+		"- Resultado: válido (valid)",
+		"- Advertencias: ninguna.",
 	} {
 		if !strings.Contains(conversionLog, expected) {
 			t.Errorf("log.md is missing %q:\n%s", expected, conversionLog)
@@ -211,7 +211,7 @@ func TestAppendValidationLogListsWarnings(t *testing.T) {
 
 	conversionLog := bundleFile(t, bundle, "log.md")
 
-	if !strings.Contains(conversionLog, "- Warnings:\n") {
+	if !strings.Contains(conversionLog, "- Advertencias:\n") {
 		t.Errorf("log.md does not list the warnings:\n%s", conversionLog)
 	}
 }

@@ -57,7 +57,7 @@ func TestBundleRepository(t *testing.T) {
 		3,
 		domain.BundleValidation{
 			Status:   domain.BundleValidWithWarnings,
-			Warnings: []string{"concept concept-02.md has no content"},
+			Warnings: []string{"el concepto concept-02.md no tiene contenido"},
 			Errors:   []string{},
 		},
 	)
@@ -194,7 +194,7 @@ func TestCreateInvalidBundleIsNotPublished(t *testing.T) {
 		domain.BundleValidation{
 			Status:   domain.BundleInvalid,
 			Warnings: []string{},
-			Errors:   []string{"bundle is missing index.md"},
+			Errors:   []string{"al bundle le falta index.md"},
 		},
 	)
 	if err != nil {

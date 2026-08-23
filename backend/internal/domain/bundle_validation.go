@@ -48,7 +48,7 @@ func (v BundleValidation) Err() error {
 	}
 
 	return fmt.Errorf(
-		"bundle validation failed: %s",
+		"la validación del bundle falló: %s",
 		strings.Join(v.Errors, "; "),
 	)
 }

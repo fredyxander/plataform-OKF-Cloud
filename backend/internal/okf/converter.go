@@ -50,10 +50,10 @@ func Convert(filename, format string, content []byte) (*Conversion, error) {
 				},
 			},
 			Operations: []string{
-				"Read the document as plain UTF-8 text.",
-				"Normalized line endings.",
-				"Kept the document as a single logical unit: " +
-					"plain text has no detectable structure.",
+				"Se leyó el documento como texto plano UTF-8.",
+				"Se normalizaron los finales de línea.",
+				"Se mantuvo el documento como una única unidad lógica: " +
+					"el texto plano no tiene estructura detectable.",
 			},
 		}, nil
 
@@ -61,27 +61,27 @@ func Convert(filename, format string, content []byte) (*Conversion, error) {
 		concepts, level := segmentMarkdown(filename, text)
 
 		operations := []string{
-			"Read the document as UTF-8 Markdown.",
-			"Normalized line endings.",
-			"Ignored headings inside fenced code blocks.",
+			"Se leyó el documento como Markdown UTF-8.",
+			"Se normalizaron los finales de línea.",
+			"Se ignoraron los encabezados dentro de bloques de código delimitados.",
 		}
 
 		if level == 0 {
 			operations = append(
 				operations,
-				"No heading level divided the document: "+
-					"kept it as a single logical unit.",
+				"Ningún nivel de encabezado dividía el documento: "+
+					"se mantuvo como una única unidad lógica.",
 			)
 		} else {
 			operations = append(
 				operations,
 				fmt.Sprintf(
-					"Segmented the document by Markdown heading level H%d, "+
-						"the highest level that actually divides it.",
+					"Se segmentó el documento por el nivel de encabezado Markdown H%d, "+
+						"el nivel más alto que realmente lo divide.",
 					level,
 				),
-				"Preserved the original order of the detected units.",
-				"Kept each unit heading inside its concept document.",
+				"Se preservó el orden original de las unidades detectadas.",
+				"Se mantuvo el encabezado de cada unidad dentro de su documento de concepto.",
 			)
 		}
 

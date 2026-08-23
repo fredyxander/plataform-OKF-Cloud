@@ -128,7 +128,7 @@ func TestBuildJobDetailCompletedWithWarnings(t *testing.T) {
 		ConceptCount: 2,
 		Validation: domain.BundleValidation{
 			Status:   domain.BundleValidWithWarnings,
-			Warnings: []string{"concept concept-02.md has no content"},
+			Warnings: []string{"el concepto concept-02.md no tiene contenido"},
 			Errors:   []string{},
 		},
 	}
@@ -165,7 +165,7 @@ func TestBuildJobDetailCompletedWithWarnings(t *testing.T) {
 // Bundle incompleto: el Job falla, la clasificación queda visible y no
 // se ofrece ninguna URL de descarga.
 func TestBuildJobDetailInvalidBundleIsNotDownloadable(t *testing.T) {
-	errorMessage := "bundle validation failed: bundle is missing index.md"
+	errorMessage := "la validación del bundle falló: al bundle le falta index.md"
 
 	job := &domain.Job{
 		ID:           "job-789",
@@ -181,7 +181,7 @@ func TestBuildJobDetailInvalidBundleIsNotDownloadable(t *testing.T) {
 		Validation: domain.BundleValidation{
 			Status:   domain.BundleInvalid,
 			Warnings: []string{},
-			Errors:   []string{"bundle is missing index.md"},
+			Errors:   []string{"al bundle le falta index.md"},
 		},
 	}
 
@@ -366,7 +366,7 @@ func TestJobListCarriesDocumentAndBundle(t *testing.T) {
 // Un Job fallido cuyo bundle fue rechazado se lista con su validación
 // pero sin ofrecer descarga.
 func TestJobListRejectedBundleHasNoDownload(t *testing.T) {
-	message := "bundle validation failed: bundle is missing index.md"
+	message := "la validación del bundle falló: al bundle le falta index.md"
 
 	items := []*domain.JobListItem{
 		{
@@ -383,7 +383,7 @@ func TestJobListRejectedBundleHasNoDownload(t *testing.T) {
 				IsValid: false,
 				Validation: domain.BundleValidation{
 					Status: domain.BundleInvalid,
-					Errors: []string{"bundle is missing index.md"},
+					Errors: []string{"al bundle le falta index.md"},
 				},
 			},
 		},

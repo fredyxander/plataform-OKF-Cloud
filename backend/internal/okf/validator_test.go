@@ -86,7 +86,7 @@ func TestValidateBundleMissingIndexIsInvalid(t *testing.T) {
 		t.Fatal("an invalid bundle must never be publishable")
 	}
 
-	if !containsSubstring(result.Errors, "missing index.md") {
+	if !containsSubstring(result.Errors, "le falta index.md") {
 		t.Fatalf("expected missing index.md error, got %v", result.Errors)
 	}
 
@@ -113,7 +113,7 @@ func TestValidateBundleMissingLogIsInvalid(t *testing.T) {
 		t.Fatalf("expected invalid bundle, got %s", result.Status)
 	}
 
-	if !containsSubstring(result.Errors, "missing log.md") {
+	if !containsSubstring(result.Errors, "le falta log.md") {
 		t.Fatalf("expected missing log.md error, got %v", result.Errors)
 	}
 }
@@ -135,7 +135,7 @@ func TestValidateBundleUnlinkedConceptIsInvalid(t *testing.T) {
 		t.Fatalf("expected invalid bundle, got %s", result.Status)
 	}
 
-	if !containsSubstring(result.Errors, "does not reference concept") {
+	if !containsSubstring(result.Errors, "no referencia el concepto") {
 		t.Fatalf("expected unlinked concept error, got %v", result.Errors)
 	}
 }
@@ -189,7 +189,7 @@ func TestValidateBundleDuplicateFileIsInvalid(t *testing.T) {
 		t.Fatalf("expected invalid bundle, got %s", result.Status)
 	}
 
-	if !containsSubstring(result.Errors, "duplicate file") {
+	if !containsSubstring(result.Errors, "archivo duplicado") {
 		t.Fatalf("expected duplicate file error, got %v", result.Errors)
 	}
 }
@@ -224,7 +224,7 @@ func TestValidateBundleEmptyConceptIsValidWithWarnings(t *testing.T) {
 		t.Fatal("a bundle with warnings must remain publishable")
 	}
 
-	if !containsSubstring(result.Warnings, "has no content") {
+	if !containsSubstring(result.Warnings, "no tiene contenido") {
 		t.Fatalf("expected empty concept warning, got %v", result.Warnings)
 	}
 }
@@ -250,7 +250,7 @@ func TestValidateBundleEmptyLogIsValidWithWarnings(t *testing.T) {
 		t.Fatalf("expected valid with warnings, got %s", result.Status)
 	}
 
-	if !containsSubstring(result.Warnings, "log.md is empty") {
+	if !containsSubstring(result.Warnings, "log.md está vacío") {
 		t.Fatalf("expected empty log warning, got %v", result.Warnings)
 	}
 }

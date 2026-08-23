@@ -1162,7 +1162,7 @@ End-to-end sobre el sistema desplegado:
 ``` text
 breve.txt        -> completed, 1 concepto,  valid,                  descarga 200
 estructurado.md  -> completed, 3 conceptos, valid,                  descarga 200
-drop-index       -> failed,    invalid + "bundle is missing index.md",
+drop-index       -> failed,    invalid + "al bundle le falta index.md",
                     sin objetos en MinIO,                           descarga 409
 empty-concept    -> completed, valid_with_warnings + advertencia,   descarga 200
 ```
@@ -1744,7 +1744,7 @@ Camino fallido con bundle rechazado, en detalle y en listado:
 
 ``` text
 status=failed  terminal=true
-error_message="bundle validation failed: bundle is missing index.md"
+error_message="la validación del bundle falló: al bundle le falta index.md"
 bundle.validation.status=invalid  (sin download_url)
 ```
 
@@ -2025,6 +2025,38 @@ vuelo, uno por worker con `prefetch = 1`, y tres esperando en la cola. Es la
 forma más directa de enseñar en pantalla que la cola existe y que los workers
 escalan, sin abrir la consola de RabbitMQ. Con dos cargas no se aprecia,
 porque ambas se toman de inmediato.
+
+### Bundle e informes en español --- COMPLETADO Y VERIFICADO
+
+`index.md` y `log.md` se generaban en inglés, en un proyecto cuya interfaz,
+documentación de entrega y sustentación son en español. El segmento 7 del
+video consiste precisamente en abrir esos dos archivos en pantalla.
+
+Traducido todo lo que compone el bundle: los encabezados y campos de
+`index.md`, los de `log.md`, las operaciones que registra el conversor, la
+etiqueta de reserva para una unidad sin título y la sección de validación.
+
+**Alcance mayor de lo pedido, y por qué.** Las advertencias y los errores de
+validación también se escriben en `log.md`, pero además viajan en la
+respuesta de la API (`validation.warnings`, `validation.errors`) y en
+`error_message`. Dejarlos en inglés habría hecho que `log.md` terminara con
+una línea suelta en otro idioma, así que se tradujeron igual. La consecuencia
+es que cambian esas cadenas del contrato HTTP. No afecta al frontend, que
+solo muestra lo que recibe, y de hecho lo hace coherente con su interfaz en
+español; el README lo indica de forma explícita para quien lo consuma.
+
+En `log.md` el resultado se escribe con el texto legible y el valor literal
+del contrato entre paréntesis --- `válido con advertencias
+(valid_with_warnings)` --- para que el registro siga siendo rastreable frente
+a lo que devuelve la API. Los identificadores del contrato (`valid`,
+`valid_with_warnings`, `invalid`, los estados del Job) no se tradujeron: son
+valores de máquina, no mensajes.
+
+Verificado generando bundles reales: un `.txt` breve produce `Registro de
+conversión` con `Resultado: válido (valid)`; un Markdown con una sección
+vacía advierte `el concepto concept-02.md no tiene contenido`; y con
+`OKF_FAULT_INJECTION=drop-index` el Job falla con `la validación del bundle
+falló: al bundle le falta index.md`. Suite completa en verde.
 
 ### Cómo alcanza el frontend a la API
 

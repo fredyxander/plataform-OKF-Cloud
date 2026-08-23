@@ -796,8 +796,7 @@ function JobDetailView({token,onExpired}:{token:string;onExpired:()=>void}) {
 
       {!job.terminal&&(
         <div style={{background:'#fafff5',border:'1px solid #dff0c8',borderRadius:'10px',padding:'14px',fontSize:'0.8rem',color:'#7a9a60',lineHeight:1.6}}>
-          El worker está procesando el documento en segundo plano. Puedes cerrar
-          esta página: el trabajo continúa y el resultado seguirá aquí.
+          El documento se está procesando. Puedes cerrar esta página y consultar el estado en documentos.
         </div>
       )}
     </div>

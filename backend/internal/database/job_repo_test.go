@@ -142,7 +142,7 @@ func TestJobRepository(t *testing.T) {
 		2,
 		domain.BundleValidation{
 			Status:   domain.BundleValidWithWarnings,
-			Warnings: []string{"concept concept-02.md has no content"},
+			Warnings: []string{"el concepto concept-02.md no tiene contenido"},
 			Errors:   []string{},
 		},
 	); err != nil {

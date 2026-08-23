@@ -48,13 +48,13 @@ func ValidateBundle(bundle *Bundle) domain.BundleValidation {
 
 	for _, file := range bundle.Files {
 		if file.Name == "" {
-			errs = append(errs, "bundle contains a file without name")
+			errs = append(errs, "el bundle contiene un archivo sin nombre")
 			continue
 		}
 
 		if _, exists := files[file.Name]; exists {
 			errs = append(errs, fmt.Sprintf(
-				"duplicate file in bundle: %s",
+				"archivo duplicado en el bundle: %s",
 				file.Name,
 			))
 
@@ -66,23 +66,23 @@ func ValidateBundle(bundle *Bundle) domain.BundleValidation {
 
 	// 2. Estructura mínima obligatoria.
 	if bundle.ConceptCount < 1 {
-		errs = append(errs, "bundle must contain at least one concept")
+		errs = append(errs, "el bundle debe contener al menos un concepto")
 	}
 
 	index, hasIndex := files["index.md"]
 	if !hasIndex {
-		errs = append(errs, "bundle is missing index.md")
+		errs = append(errs, "al bundle le falta index.md")
 	} else if strings.TrimSpace(string(index.Content)) == "" {
-		errs = append(errs, "index.md is empty")
+		errs = append(errs, "index.md está vacío")
 	}
 
 	logFile, hasLog := files["log.md"]
 	if !hasLog {
-		errs = append(errs, "bundle is missing log.md")
+		errs = append(errs, "al bundle le falta log.md")
 	} else if strings.TrimSpace(string(logFile.Content)) == "" {
 		warnings = append(
 			warnings,
-			"log.md is empty: the conversion has no traceability",
+			"log.md está vacío: la conversión no tiene trazabilidad",
 		)
 	}
 
@@ -116,14 +116,14 @@ func ValidateBundle(bundle *Bundle) domain.BundleValidation {
 
 		if _, exists := files[target]; !exists {
 			errs = append(errs, fmt.Sprintf(
-				"index.md references a file that is not in the bundle: %s",
+				"index.md referencia un archivo que no está en el bundle: %s",
 				target,
 			))
 		}
 
 		if label == "" {
 			warnings = append(warnings, fmt.Sprintf(
-				"index.md links %s without a title",
+				"index.md enlaza %s sin título",
 				target,
 			))
 		}
@@ -139,7 +139,7 @@ func ValidateBundle(bundle *Bundle) domain.BundleValidation {
 		concept, exists := files[name]
 		if !exists {
 			errs = append(errs, fmt.Sprintf(
-				"bundle is missing concept file: %s",
+				"al bundle le falta el archivo de concepto: %s",
 				name,
 			))
 
@@ -148,14 +148,14 @@ func ValidateBundle(bundle *Bundle) domain.BundleValidation {
 
 		if hasIndex && !linked[name] {
 			errs = append(errs, fmt.Sprintf(
-				"index.md does not reference concept: %s",
+				"index.md no referencia el concepto: %s",
 				name,
 			))
 		}
 
 		if conceptBody(string(concept.Content)) == "" {
 			warnings = append(warnings, fmt.Sprintf(
-				"concept %s has no content",
+				"el concepto %s no tiene contenido",
 				name,
 			))
 		}
@@ -175,7 +175,7 @@ func ValidateBundle(bundle *Bundle) domain.BundleValidation {
 		}
 
 		warnings = append(warnings, fmt.Sprintf(
-			"bundle contains a file not referenced from index.md: %s",
+			"el bundle contiene un archivo no referenciado desde index.md: %s",
 			file.Name,
 		))
 	}

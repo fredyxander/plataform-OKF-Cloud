@@ -37,7 +37,7 @@ func indexLabel(title string) string {
 	label = strings.Join(strings.Fields(label), " ")
 
 	if label == "" {
-		return "Untitled unit"
+		return "Unidad sin título"
 	}
 
 	return label
@@ -84,11 +84,11 @@ func BuildBundle(conversion *Conversion) (*Bundle, error) {
 	}
 
 	index := fmt.Sprintf(
-		"# Index\n\n"+
-			"- Source: %s\n"+
-			"- Format: %s\n"+
-			"- Concepts: %d\n\n"+
-			"## Concepts\n\n%s",
+		"# Índice\n\n"+
+			"- Documento de origen: %s\n"+
+			"- Formato: %s\n"+
+			"- Conceptos: %d\n\n"+
+			"## Conceptos\n\n%s",
 		conversion.Filename,
 		conversion.Format,
 		len(conversion.Concepts),
@@ -96,13 +96,13 @@ func BuildBundle(conversion *Conversion) (*Bundle, error) {
 	)
 
 	conversionLog := fmt.Sprintf(
-		"# Conversion Log\n\n"+
-			"## Source\n\n"+
-			"- File: %s\n"+
-			"- Format: %s\n\n"+
-			"## Operations\n\n%s\n"+
-			"## Detected units\n\n%s\n"+
-			"Total units detected: %d\n",
+		"# Registro de conversión\n\n"+
+			"## Documento de origen\n\n"+
+			"- Archivo: %s\n"+
+			"- Formato: %s\n\n"+
+			"## Operaciones\n\n%s\n"+
+			"## Unidades detectadas\n\n%s\n"+
+			"Total de unidades detectadas: %d\n",
 		conversion.Filename,
 		conversion.Format,
 		operationList(conversion.Operations),
@@ -132,7 +132,7 @@ func BuildBundle(conversion *Conversion) (*Bundle, error) {
 
 func operationList(operations []string) string {
 	if len(operations) == 0 {
-		return "- No transformation was recorded.\n"
+		return "- No se registró ninguna transformación.\n"
 	}
 
 	var list strings.Builder
@@ -142,6 +142,25 @@ func operationList(operations []string) string {
 	}
 
 	return list.String()
+}
+
+// validationLabel traduce la clasificación al texto de log.md, que es un
+// documento para leer, no para consumir. El valor literal del contrato se
+// escribe junto al texto, de modo que el registro siga siendo rastreable
+// frente a lo que devuelve la API.
+func validationLabel(status domain.BundleValidationStatus) string {
+	switch status {
+	case domain.BundleValid:
+		return "válido"
+
+	case domain.BundleValidWithWarnings:
+		return "válido con advertencias"
+
+	case domain.BundleInvalid:
+		return "inválido"
+	}
+
+	return string(status)
 }
 
 // AppendValidationLog añade a log.md el resultado de la validación.
@@ -157,15 +176,15 @@ func AppendValidationLog(bundle *Bundle, validation domain.BundleValidation) {
 
 	var section strings.Builder
 
-	section.WriteString("\n## Validation\n\n")
-	section.WriteString(fmt.Sprintf("- Result: %s\n", validation.Status))
-	section.WriteString("- Checks passed: minimum structure (index.md, " +
-		"log.md and at least one concept) and resolution of every index link.\n")
+	section.WriteString("\n## Validación\n\n")
+	section.WriteString(fmt.Sprintf("- Resultado: %s (%s)\n", validationLabel(validation.Status), validation.Status))
+	section.WriteString("- Comprobaciones superadas: estructura mínima (index.md, " +
+		"log.md y al menos un concepto) y resolución de todos los enlaces del índice.\n")
 
 	if len(validation.Warnings) == 0 {
-		section.WriteString("- Warnings: none.\n")
+		section.WriteString("- Advertencias: ninguna.\n")
 	} else {
-		section.WriteString("- Warnings:\n")
+		section.WriteString("- Advertencias:\n")
 
 		for _, warning := range validation.Warnings {
 			section.WriteString("  - " + warning + "\n")

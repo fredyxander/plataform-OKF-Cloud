@@ -782,6 +782,11 @@ Poll `GET /jobs/{id}` — or refresh `GET /jobs` — until `terminal` is true.
 `download_url` is the authority: it is present only when the bundle can
 actually be downloaded. Never build that URL by hand.
 
+`error_message`, `validation.warnings` and `validation.errors` are written in
+Spanish, matching the generated `index.md` and `log.md` and the interface that
+displays them. They are meant to be shown to the user as they arrive, not
+mapped to messages of your own.
+
 ### The one trap
 
 `download_url` requires the `Authorization` header, so it does **not** work as
@@ -1014,7 +1019,7 @@ docker compose up -d worker   # back to the normal pipeline
 ```
 
 Expected: the Job ends `failed` with
-`bundle validation failed: bundle is missing index.md`, the bundle reports
+`la validación del bundle falló: al bundle le falta index.md`, the bundle reports
 `"status": "invalid"` with no `download_url`, and the download answers `409`.
 Nothing is written to MinIO for that job.
 
