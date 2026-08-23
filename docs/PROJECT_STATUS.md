@@ -1878,6 +1878,47 @@ si lo renderiza, de modo que sin sesión se leía `null.user` y el árbol entero
 fallaba --- incluidas las rutas públicas. La forma correcta es que cada ruta
 construya su elemento dentro del condicional.
 
+### Listado de trabajos: nombre real y refresco --- COMPLETADO Y VERIFICADO
+
+Tres defectos del listado, todos visibles en el segmento 4 del video.
+
+**El nombre del documento no se mostraba.** El backend lo envía anidado en
+`document.filename`; el cliente lo leía en la raíz como `job.filename`. Solo
+aparecía el nombre en los trabajos subidos en esa misma sesión, porque ahí lo
+asignaba a mano desde el `input` de archivo; al recargar, todas las filas
+decían "Documento". El tipo `Job` del cliente ahora refleja la forma real de
+`GET /jobs`, incluidos `terminal` y `document`.
+
+**La lista no se refrescaba.** Se cargaba una vez al montar el panel, y el
+seguimiento vivía dentro de la pantalla de subida: al cambiar de sección ese
+componente se desmontaba, el intervalo se limpiaba y el trabajo se quedaba
+congelado en `queued` hasta recargar a mano. Ahora el refresco vive en el
+panel y se ejecuta cada 3 s **mientras quede algún trabajo no terminal**; en
+cuanto todos lo son, para. La condición se calcula con la bandera `terminal`
+del backend, no con una lista de estados replicada en el cliente.
+
+**Un token caducado dejaba la aplicación en un limbo.** Al persistir la
+sesión en `localStorage` apareció un caso nuevo: un JWT vencido (24 h) hacía
+que todas las peticiones fallasen mientras la interfaz seguía aparentando
+normalidad, porque el fallo se tragaba con un `catch` vacío. Ahora un `401`
+cierra la sesión y devuelve al login, tanto en el listado como en la vista de
+detalle.
+
+Verificado con Chrome headless sobre el stack real, con
+`OKF_PROCESSING_DELAY=20s` para que los estados intermedios fueran
+observables:
+
+-   la lista muestra `06-seccion-vacia.md` y `refresco.md`, no "Documento";
+-   un trabajo subido durante la sesión aparece en la lista sin recargar y
+    pasa de `⚙️ Procesando` a `✅ Completado` con su recuento de conceptos y
+    su botón de descarga, todo sin intervención;
+-   con un token inválido la aplicación vuelve al login y borra la sesión
+    almacenada;
+-   cero errores de página.
+
+Después se restauró el entorno por defecto: dos workers, sin retardo ni
+inyección de fallos.
+
 ### Cómo alcanza el frontend a la API
 
 El frontend llamaba a rutas relativas (`/auth/register`) confiando en el

@@ -55,7 +55,18 @@ type Validation = { status: ValidationStatus; warnings: string[]; errors: string
 // que su ausencia es la señal de que no hay nada que ofrecer.
 type Bundle = { id: string; concept_count: number; is_valid: boolean; validation?: Validation; download_url?: string }
 type DocumentSummary = { id: string; filename: string; format: string }
-type Job = { id: string; status: JobStatus; created_at: string; updated_at: string; filename?: string; bundle?: Bundle }
+// Entrada del listado, con la forma exacta que devuelve GET /jobs. El
+// nombre del documento viaja anidado en `document`, no en la raíz.
+type Job = {
+  id: string
+  status: JobStatus
+  terminal: boolean
+  error_message?: string
+  document: DocumentSummary
+  bundle?: Bundle | null
+  created_at: string
+  updated_at: string
+}
 type JobDetail = {
   id: string
   status: JobStatus
@@ -332,29 +343,31 @@ function UploadSection({token,onJobCreated}:{token:string;onJobCreated:(j:Job)=>
   const [phase,setPhase]=useState<UploadPhase>('idle')
   const [file,setFile]=useState<File|null>(null)
   const [drag,setDrag]=useState(false)
-  const [activeJob,setActiveJob]=useState<Job|null>(null)
+  const [activeJob,setActiveJob]=useState<JobDetail|null>(null)
   const [error,setError]=useState('')
 
   const pollJob=useCallback(async(id:string)=>{
     const res=await fetch(`${API}/jobs/${id}`,{headers:{Authorization:`Bearer ${token}`}})
     if(!res.ok) return null
-    return res.json() as Promise<Job>
+    return res.json() as Promise<JobDetail>
   },[token])
 
+  // El seguimiento para cuando el backend marca el trabajo como terminal,
+  // no cuando el cliente reconoce un estado de una lista suya.
   useEffect(()=>{
-    if(!activeJob||activeJob.status==='completed'||activeJob.status==='failed') return
+    if(!activeJob||activeJob.terminal) return
     const id=setInterval(async()=>{
       const updated=await pollJob(activeJob.id)
       if(!updated) return
       setActiveJob(updated)
-      if(updated.status==='completed'||updated.status==='failed'){
+      if(updated.terminal){
         clearInterval(id)
         setPhase(updated.status==='completed'?'done':'failed')
-        onJobCreated({...updated,filename:file?.name})
+        onJobCreated(updated)
       }
     },2500)
     return ()=>clearInterval(id)
-  },[activeJob,pollJob,file,onJobCreated])
+  },[activeJob,pollJob,onJobCreated])
 
   const handleFile=(f:File)=>{
     const ok=['text/plain','text/markdown','']
@@ -372,7 +385,16 @@ function UploadSection({token,onJobCreated}:{token:string;onJobCreated:(j:Job)=>
       let data:any
       try{data=JSON.parse(text2)}catch{data=text2}
       if(!res.ok) throw new Error(typeof data==='string'?data:'Error al subir')
-      const job:Job={id:data.jobId,status:data.status,created_at:new Date().toISOString(),updated_at:new Date().toISOString(),filename:file.name}
+      // La respuesta de carga ya trae el documento creado, así que la
+      // fila aparece con su nombre real desde el primer instante.
+      const job:JobDetail={
+        id:data.jobId,
+        status:data.status,
+        terminal:false,
+        document:{id:data.document?.id??'',filename:data.document?.filename??file.name,format:data.document?.format??''},
+        created_at:new Date().toISOString(),
+        updated_at:new Date().toISOString(),
+      }
       setActiveJob(job);setPhase('processing')
     } catch(e:any){setError(e.message);setPhase('selected')}
   }
@@ -518,10 +540,10 @@ function DocumentosSection({jobs,token}:{jobs:Job[];token:string}) {
         const s=si[job.status]??si.queued
         return (
           <div key={job.id} className="jrow" style={{background:'rgba(255,252,245,0.85)',border:`1.5px solid ${s.border}`,borderRadius:'12px',padding:'13px 16px',marginBottom:'9px',display:'flex',alignItems:'center',gap:'10px',backdropFilter:'blur(8px)',transition:'all .2s'}}>
-            <div style={{fontSize:'1.4rem'}}>{job.filename?.endsWith('.md')?'📝':'📄'}</div>
+            <div style={{fontSize:'1.4rem'}}>{job.document?.filename?.endsWith('.md')?'📝':'📄'}</div>
             {/* La fila entera lleva al detalle, que es una ruta real. */}
             <div onClick={()=>navigate(`/jobs/${job.id}`)} style={{flex:1,minWidth:0,cursor:'pointer'}}>
-              <div style={{fontWeight:600,color:'#2d3a1e',fontSize:'0.86rem',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginBottom:'4px'}}>{job.filename??'Documento'}</div>
+              <div style={{fontWeight:600,color:'#2d3a1e',fontSize:'0.86rem',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginBottom:'4px'}}>{job.document?.filename||'Documento'}</div>
               <div style={{display:'flex',alignItems:'center',gap:'7px',flexWrap:'wrap' as const}}>
                 <span style={{padding:'2px 8px',borderRadius:'20px',fontSize:'0.68rem',fontWeight:700,background:s.bg,color:s.color,border:`1px solid ${s.border}`}}>{s.label}</span>
                 {job.bundle&&<span style={{fontSize:'0.7rem',color:'#6a8a50'}}>📦 {job.bundle.concept_count} conceptos</span>}
@@ -531,7 +553,7 @@ function DocumentosSection({jobs,token}:{jobs:Job[];token:string}) {
             {(job.status==='queued'||job.status==='processing')&&<div style={{width:15,height:15,border:'2px solid #6aac3e',borderTopColor:'transparent',borderRadius:'50%',animation:'spin3 1s linear infinite',flexShrink:0}}/>}
             <button onClick={()=>navigate(`/jobs/${job.id}`)} style={{padding:'6px 10px',background:'transparent',color:'#6aac3e',border:'1px solid #c8e898',borderRadius:'7px',fontSize:'0.73rem',fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>Detalle</button>
             {job.bundle?.download_url&&(
-              <button onClick={()=>downloadBundle(job.bundle!.download_url!,token,(job.filename??'bundle').replace(/\.[^.]+$/,'')+'.zip')} style={{padding:'6px 12px',background:'#6aac3e',color:'white',border:'none',borderRadius:'7px',fontSize:'0.73rem',fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>⬇ Descargar</button>
+              <button onClick={()=>downloadBundle(job.bundle!.download_url!,token,(job.document?.filename||'bundle').replace(/\.[^.]+$/,'')+'.zip')} style={{padding:'6px 12px',background:'#6aac3e',color:'white',border:'none',borderRadius:'7px',fontSize:'0.73rem',fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>⬇ Descargar</button>
             )}
           </div>
         )
@@ -606,7 +628,7 @@ function FindingList({title,items,tone}:{title:string;items:string[];tone:'warni
 //
 // La URL con el identificador es lo que permite demostrar el aislamiento:
 // basta pegar el id de otro usuario para ver que el servidor lo niega.
-function JobDetailView({token}:{token:string}) {
+function JobDetailView({token,onExpired}:{token:string;onExpired:()=>void}) {
   const {id}=useParams<{id:string}>()
   const navigate=useNavigate()
   const [job,setJob]=useState<JobDetail|null>(null)
@@ -671,7 +693,8 @@ function JobDetailView({token}:{token:string}) {
     <div style={{...card,textAlign:'center',padding:'48px 28px'}}>
       <div style={{fontSize:'2.4rem',marginBottom:'10px'}}>⏰</div>
       <div style={{fontWeight:700,color:'#2d3a1e',marginBottom:'8px'}}>Tu sesión expiró</div>
-      <div style={{fontSize:'0.82rem',color:'#8aaa60'}}>Vuelve a iniciar sesión para consultar este trabajo.</div>
+      <div style={{fontSize:'0.82rem',color:'#8aaa60',marginBottom:'18px'}}>Vuelve a iniciar sesión para consultar este trabajo.</div>
+      <button onClick={onExpired} style={{padding:'9px 22px',background:'#6aac3e',color:'white',border:'none',borderRadius:'10px',fontSize:'0.84rem',fontWeight:600,cursor:'pointer'}}>Iniciar sesión</button>
     </div>
   )
 
@@ -759,12 +782,28 @@ function Dashboard({user,token,onLogout}:{user:User;token:string;onLogout:()=>vo
   const [section,setSection]=useState<DashSection>('upload')
   const [jobs,setJobs]=useState<Job[]>([])
 
+  const loadJobs=useCallback(async()=>{
+    try {
+      const res=await fetch(`${API}/jobs`,{headers:{Authorization:`Bearer ${token}`}})
+      // Una sesión guardada puede haber caducado. Sin este corte la
+      // aplicación seguiría en pie fallando en silencio en cada petición.
+      if(res.status===401){onLogout();return}
+      if(!res.ok) return
+      const data=await res.json()
+      if(Array.isArray(data)) setJobs(data)
+    } catch { /* se reintenta en el siguiente refresco */ }
+  },[token,onLogout])
+
+  useEffect(()=>{void loadJobs()},[loadJobs])
+
+  // La lista se refresca sola mientras quede algún trabajo vivo, y para
+  // cuando todos son terminales: entonces ya no hay nada que esperar.
+  const pending=jobs.some(job=>!job.terminal)
   useEffect(()=>{
-    fetch(`${API}/jobs`,{headers:{Authorization:`Bearer ${token}`}})
-      .then(r=>r.ok?r.json():[] )
-      .then((data:Job[])=>{ if(Array.isArray(data)) setJobs(data) })
-      .catch(()=>{})
-  },[token])
+    if(!pending) return
+    const timer=setInterval(()=>{void loadJobs()},3000)
+    return ()=>clearInterval(timer)
+  },[pending,loadJobs])
 
   const handleJobCreated=(job:Job)=>setJobs(prev=>{
     const exists=prev.find(j=>j.id===job.id)
@@ -809,7 +848,7 @@ function AppRoutes() {
         ? <Dashboard user={session.user} token={session.token} onLogout={handleLogout}/>
         : <Navigate to="/auth" replace/>}/>
       <Route path="/jobs/:id" element={session
-        ? <JobDetailView token={session.token}/>
+        ? <JobDetailView token={session.token} onExpired={handleLogout}/>
         : <Navigate to="/auth" replace/>}/>
       <Route path="*" element={<Navigate to="/" replace/>}/>
     </Routes>
