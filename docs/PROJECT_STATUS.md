@@ -1019,7 +1019,7 @@ Orden acordado:
 3. **Seis condiciones verificables del PDF. COMPLETADO Y VERIFICADO** (ver sección 8.3).
 4. **Reproducibilidad desde entorno limpio. COMPLETADO Y VERIFICADO** (ver sección 8.4).
 5. **Escalabilidad con dos workers. COMPLETADO Y VERIFICADO** (ver sección 8.5).
-6. **Contrato de seguimiento y notificación. COMPLETADO Y VERIFICADO** (ver sección 8.7).
+6. **Contrato de seguimiento del Job. COMPLETADO Y VERIFICADO** (ver sección 8.7).
 
 ### 8.1 Clasificación de validación del bundle --- COMPLETADO Y VERIFICADO
 
@@ -1642,11 +1642,16 @@ video que exige declarar limitaciones conocidas:
     idempotencia suministrada por el cliente; mientras tanto, el frontend debe
     deshabilitar el control de subida tras el primer clic.
 
-### 8.7 Contrato de seguimiento y notificación --- COMPLETADO Y VERIFICADO
+### 8.7 Contrato de seguimiento del Job --- COMPLETADO Y VERIFICADO
 
 Punto 6 del checklist, y último antes de M8. Se definió y verificó lo que el
 frontend consumirá para seguir un `jobId`, detectar el final y llevar al
 usuario a la descarga, conservando la vista general de Jobs.
+
+El seguimiento se resuelve consultando `GET /jobs/{id}` o refrescando
+`GET /jobs` hasta que el Job sea terminal. Se descartaron las notificaciones
+push: el enunciado pide seguimiento del estado, no notificaciones, y un canal
+push sería un segundo mecanismo sin crédito adicional.
 
 #### Estado terminal explícito
 
@@ -1740,20 +1745,44 @@ verificados. El backend está cerrado contra la rúbrica.
 
 ## Milestone 8 --- Frontend funcional
 
-**PENDIENTE.** Se inicia únicamente después del checklist previo de backend.
+**PENDIENTE.** El backend y su checklist están cerrados; los contratos que debe
+consumir están documentados en la sección *What the frontend must build* del
+README.
 
-Alcance mínimo alineado con la rúbrica:
+Alcance, exactamente lo que exigen el enunciado y el video:
 
 - autenticación y manejo del JWT;
-- carga de documentos mediante `POST /documents`;
-- recepción inmediata y seguimiento del `jobId`;
-- vista/listado de Jobs accesible por navegación normal;
-- visualización de estados `queued`, `processing`, `completed` y `failed`;
-- notificación cuando el Job finaliza;
-- posibilidad de redirigir desde la notificación al resultado del Job sin eliminar la vista general de Jobs;
-- deshabilitar el control de subida tras el primer clic: el reintento de `POST /documents` no es idempotente (ver sección 8.6);
-- disponibilidad y descarga de `GET /jobs/{id}/bundle` cuando el Job esté completado;
-- manejo claro de errores de autorización y procesamiento.
+- carga mediante `POST /documents` mostrando de inmediato el `jobId` devuelto;
+- listado de Jobs accesible por navegación normal, refrescado mientras haya
+  Jobs en curso;
+- detalle del Job en una ruta direccionable `/jobs/:id`;
+- visualización de los estados `queued`, `processing`, `completed` y `failed`,
+  incluido el caso de bundle rechazado sin descarga;
+- descarga de `GET /jobs/{id}/bundle` cuando el Job esté completado;
+- manejo claro de errores de autorización y procesamiento;
+- deshabilitar el control de subida tras el primer clic: el reintento de
+  `POST /documents` no es idempotente (ver sección 8.6).
+
+Dos decisiones que vienen del video y no del gusto:
+
+1.  **El detalle debe ser direccionable por URL.** El segmento 6 exige
+    demostrar que un usuario no alcanza un recurso ajeno; con el id en la URL
+    basta con pegar el `jobId` de otro usuario y mostrar que la vista responde
+    "no encontrado".
+2.  **El detalle debe pintar el camino fallido.** El segmento 7 exige mostrar
+    un bundle incompleto que no se publica: un Job `failed` con su
+    `error_message`, la validación `invalid` y sin botón de descarga.
+
+Y un detalle de implementación que cuesta horas descubrir: `download_url` exige
+la cabecera `Authorization`, así que no funciona como `href` de un enlace. El
+síntoma engaña, porque la descarga parece correcta y entrega un archivo de 13
+bytes que dice `unauthorized`. Hay que pedirlo con `fetch` y convertir la
+respuesta en descarga.
+
+**Fuera de alcance por decisión:** notificaciones push. El enunciado pide
+seguimiento del estado, no notificaciones, y refrescar `GET /jobs` ya lo
+cubre. Añadir un canal push supondría un segundo mecanismo que construir,
+demostrar y mantener sin crédito adicional.
 
 ## Milestone 9 --- Entrega, sustentación y cierre
 
@@ -1777,7 +1806,7 @@ Estas capacidades no bloquean el cierre de backend ni el inicio de M8:
 - métricas y observabilidad adicional;
 - cálculo separado de conformidad OKF / OKF conformity score;
 - streaming de bundles grandes;
-- mejoras adicionales de UX o notificaciones en tiempo real si el flujo básico ya está estable.
+- reintento idempotente de Jobs fallidos con vínculo al anterior.
 
 La prioridad es completar primero todos los requisitos evaluables del backend, después el frontend funcional y, solo si queda tiempo, implementar bonus.
 
@@ -1842,7 +1871,7 @@ Antes de iniciar M8 se completará el **checklist de cierre backend y rúbrica**
 3. ~~ejecutar y documentar las seis condiciones verificables del PDF~~ --- COMPLETADO (sección 8.3);
 4. ~~verificar README + `.env.example` desde un entorno limpio~~ --- COMPLETADO (sección 8.4);
 5. ~~demostrar procesamiento con dos workers y ausencia de duplicados~~ --- COMPLETADO (sección 8.5);
-6. ~~definir/probar el contrato de seguimiento y notificación por `jobId`~~ --- COMPLETADO (sección 8.7);
+6. ~~definir/probar el contrato de seguimiento por `jobId`~~ --- COMPLETADO (sección 8.7);
 7. iniciar M8 --- frontend funcional.
 
 Los desarrollos opcionales quedan fuera de esta ruta crítica y solo se realizarán si sobra tiempo.
@@ -1879,21 +1908,19 @@ Reglas:
 Usar este texto junto con este archivo:
 
 > Estoy desarrollando la Plataforma OKF Cloud descrita en
-> `PROJECT_STATUS.md`. Continúa desde el estado documentado. Los
-> Milestones 1 a 7 están completados y verificados. M7 implementó
-> idempotencia ante redelivery, claim atómico, recuperación de Jobs
-> `processing` abandonados, retry diferido, retries reales limitados con
-> `Attempt`, transición `processing -> queued`, `FAILED + error_message`,
-> DLQ y compensación de objetos parciales en MinIO. Antes de iniciar M8
-> quiero terminar todo lo pendiente del backend en este orden: revisar la
-> clasificación `VALID / VALID_WITH_WARNINGS / INVALID`, revisar la
-> conversión avanzada del bundle con distintas configuraciones, probar las
-> seis condiciones verificables del PDF, validar el README desde entorno
-> limpio, probar con dos workers y definir/probar el contrato de
-> seguimiento/notificación por `jobId` manteniendo también la vista de
-> Jobs. Después se inicia M8 --- frontend funcional. Los bonus solo se
-> implementan si sobra tiempo. Quiero avanzar paso a paso y verificar cada
-> cambio sin sobrecomplicar el proyecto.
+> `PROJECT_STATUS.md`. Continúa desde el estado documentado. El backend
+> está cerrado y verificado, y también el checklist previo al frontend:
+> clasificación `VALID / VALID_WITH_WARNINGS / INVALID`, revisión de la
+> conversión con configuraciones representativas, las seis condiciones
+> verificables del PDF, reproducibilidad desde entorno limpio,
+> escalabilidad con dos workers y el contrato de seguimiento por `jobId`.
+> Todos los procedimientos son reproducibles desde el README. El
+> frontend (M8) lo desarrolla otra persona contra los contratos
+> documentados en la sección *What the frontend must build* del README;
+> Queda M9: recorrido final desde entorno limpio,
+> evidencia para la rúbrica y video de máximo 20 minutos. Los bonus solo
+> se implementan si sobra tiempo. Quiero avanzar paso a paso y verificar
+> cada cambio sin sobrecomplicar el proyecto.
 
 ------------------------------------------------------------------------
 
@@ -1909,7 +1936,7 @@ Documentos + MinIO              ██████████  completo y verif
 Pipeline OKF                    ██████████  completo y verificado E2E
 Confiabilidad M7                ██████████  completa y verificada
 Cierre backend contra rúbrica   ██████████  completo (6/6)
-Frontend funcional M8           ░░░░░░░░░░  pendiente
+Frontend funcional M8           ░░░░░░░░░░  pendiente (otra persona)
 Entrega/sustentación            ░░░░░░░░░░  pendiente
 ```
 

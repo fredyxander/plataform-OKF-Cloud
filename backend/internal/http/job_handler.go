@@ -162,45 +162,26 @@ func (h *JobHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *JobHandler) Get(w http.ResponseWriter, r *http.Request) {
-	ownerID, ok := UserIDFromContext(r.Context())
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	jobID := r.PathValue("id")
-	if jobID == "" {
-		http.Error(w, "job id is required", http.StatusBadRequest)
-		return
-	}
-
-	// 1. Obtener el Job y verificar que pertenece al usuario.
+// loadJobDetail obtiene el Job del propietario junto con su bundle.
+//
+// Lo comparten la consulta puntual y el stream de eventos, para que
+// ambos emitan exactamente la misma representación.
+func (h *JobHandler) loadJobDetail(
+	jobID string,
+	ownerID string,
+) (JobDetailResponse, error) {
 	job, err := h.db.GetJobByID(jobID, ownerID)
 	if err != nil {
-		if errors.Is(err, database.ErrNotFound) {
-			http.Error(w, "job not found", http.StatusNotFound)
-			return
-		}
-
-		http.Error(w, "could not get job", http.StatusInternalServerError)
-		return
+		return JobDetailResponse{}, err
 	}
 
-	// 2. Por defecto no hay Bundle asociado a la respuesta.
 	var bundle *domain.Bundle
 
-	// 3. Buscamos el Bundle cuando el Job ya terminó.
-	//
-	//    También se consulta para un Job fallido: si la validación
-	//    rechazó el bundle, existe una fila que explica por qué, aunque
-	//    no sea descargable.
-	if job.Status == domain.JobStatusCompleted ||
-		job.Status == domain.JobStatusFailed {
-		bundle, err = h.db.GetBundleByJobID(
-			job.ID,
-			ownerID,
-		)
+	// El bundle se consulta cuando el Job ya terminó. También para un
+	// Job fallido: si la validación lo rechazó, existe una fila que
+	// explica por qué, aunque no sea descargable.
+	if job.Status.IsTerminal() {
+		bundle, err = h.db.GetBundleByJobID(job.ID, ownerID)
 
 		if err != nil {
 			if !errors.Is(err, database.ErrNotFound) {
@@ -215,13 +196,33 @@ func (h *JobHandler) Get(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. Construir la respuesta HTTP.
-	response := buildJobDetailResponse(
-		job,
-		bundle,
-	)
+	return buildJobDetailResponse(job, bundle), nil
+}
 
-	// 5. Enviar JSON.
+func (h *JobHandler) Get(w http.ResponseWriter, r *http.Request) {
+	ownerID, ok := UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	jobID := r.PathValue("id")
+	if jobID == "" {
+		http.Error(w, "job id is required", http.StatusBadRequest)
+		return
+	}
+
+	response, err := h.loadJobDetail(jobID, ownerID)
+	if err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			http.Error(w, "job not found", http.StatusNotFound)
+			return
+		}
+
+		http.Error(w, "could not get job", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {

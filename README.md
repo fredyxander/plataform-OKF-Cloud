@@ -721,6 +721,66 @@ reveal that a foreign resource exists.
 
 ---
 
+## What the frontend must build
+
+The scope below is exactly what the project specification requires and what the
+presentation video has to show. Nothing else is expected.
+
+### Screens
+
+| Screen | Consumes | Must show |
+| --- | --- | --- |
+| Register / login | `POST /auth/register`, `POST /auth/login` | Stores the JWT and sends it on every later request. |
+| Upload | `POST /documents` | The returned `jobId` and `queued` status, immediately. The video has to show that the upload does not wait for the conversion. |
+| Jobs list | `GET /jobs` | One row per job: document filename, status, and a download action when `bundle.download_url` is present. Reachable by normal navigation, refreshed every few seconds. |
+| Job detail | `GET /jobs/{id}` | Status, validation result, and the download. Must be a real route with the id in the URL. |
+
+### Two decisions that come from the video, not from taste
+
+**The job detail must be addressable as `/jobs/:id`.** Segment 6 requires
+demonstrating that a user cannot reach somebody else's resource. With the id in
+the URL that demo is simply pasting another user's `jobId` while logged in as
+the first one and showing that the view reports "not found". It cannot be shown
+that way if the detail is only reachable from a list row.
+
+**The detail must render the failure path.** Segment 7 requires showing an
+incomplete bundle that is not published. In the interface that means a `failed`
+job displaying its `error_message`, the `invalid` validation with its errors,
+and **no download button**. A detail view that only handles the happy path
+cannot be filmed for that segment.
+
+### What to render, by outcome
+
+Poll `GET /jobs/{id}` — or refresh `GET /jobs` — until `terminal` is true.
+
+| `status` | `terminal` | Show |
+| --- | --- | --- |
+| `queued` | `false` | Waiting. Keep refreshing. |
+| `processing` | `false` | In progress. Keep refreshing. |
+| `completed` + `validation.status` `valid` | `true` | Success and the download. |
+| `completed` + `validation.status` `valid_with_warnings` | `true` | Success, the download, **and** `validation.warnings`. Still a success, not a partial failure. |
+| `failed` | `true` | `error_message`, plus `validation.errors` when a bundle was rejected. Never a download. |
+
+`download_url` is the authority: it is present only when the bundle can
+actually be downloaded. Never build that URL by hand.
+
+### The one trap
+
+`download_url` requires the `Authorization` header, so it does **not** work as
+an `<a href>`: the browser does not send the header when following a link. The
+symptom is cruel — the download appears to succeed and delivers a 13-byte file
+containing the word `unauthorized`.
+
+Request it with `fetch` carrying the token, turn the response into a blob and
+trigger the download from there.
+
+### Optional
+
+`GET /stats` gives job counts by status for a header. It is a bonus, not a
+requirement.
+
+---
+
 ## Manual verification with curl
 
 End-to-end check of upload, processing and bundle download against the running
@@ -1316,16 +1376,10 @@ frontend, which is a rubric criterion of its own and is not started yet.
 - ~~**Basic flow metrics.**~~ **Done** — `GET /stats`, see
   [Flow metrics](#flow-metrics).
 
-- **Real-time completion notice.** The required behaviour is polling
-  `GET /jobs/{id}` until `terminal` is true, as described in
-  [API contract](#api-contract). The frontend should keep that behind a single
-  abstraction — a `useJobStatus(jobId)` hook — so the mechanism can be replaced
-  without touching any component. The cheap upgrade is then one SSE endpoint
-  that polls the database server-side and pushes each change: no worker-to-API
-  messaging, no `LISTEN/NOTIFY`, no extra queue, and the client abstraction
-  stays the same. Retrofitting a push model onto a UI written directly against
-  polling is a rewrite of its state handling, which is why the abstraction
-  matters even if the upgrade never happens.
+- **Push notifications instead of polling.** Deliberately left out. The
+  specification asks for status tracking, not notifications, and polling
+  `GET /jobs` already covers it. A push channel would add a second mechanism to
+  build, demonstrate and maintain for no additional credit.
 
 - **`assets/` extraction and references.** Would first require accepting ZIP
   uploads or embedded base64: with a single uploaded document there are no
@@ -1450,13 +1504,15 @@ The HTTP request does not execute the conversion. The API returns the created `j
 
 ### Milestone 8 — Functional frontend ⏳
 
+Scope and contracts are specified in
+[What the frontend must build](#what-the-frontend-must-build).
+
 - Authentication and JWT handling.
-- Document upload.
-- Immediate `jobId` feedback.
-- Jobs list/dashboard.
-- Status tracking (`queued`, `processing`, `completed`, `failed`).
-- Completion notification.
-- Redirect/action from a completed Job to bundle download while preserving normal Jobs navigation.
+- Document upload showing the returned `jobId` immediately.
+- Jobs list reachable by normal navigation, refreshed while jobs are running.
+- Job detail on an addressable `/jobs/:id` route.
+- Status rendering for `queued`, `processing`, `completed` and `failed`,
+  including the rejected-bundle case with no download.
 - Authorized bundle download.
 
 ### Milestone 9 — Delivery and presentation ⏳
