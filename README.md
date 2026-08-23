@@ -604,6 +604,10 @@ what proves it:
 Conditions 1 and 6 need the worker in a non-default mode; each section sets up
 what it needs and says how to restore the normal pipeline.
 
+[§11](#11-scaling-workers-horizontally) is not one of the six, but the rubric
+also asks for workers that scale independently of the API: it measures the same
+batch processed by two workers and by one.
+
 ### 1. Start the stack
 
 ```bash
@@ -1018,6 +1022,118 @@ docker compose up -d --scale worker=1 worker   # back to one worker, no delay
 Expected: `1`. `bundles.job_id` also carries a `UNIQUE` constraint, so a second
 publication is impossible even if every check above were bypassed.
 
+### 11. Scaling workers horizontally
+
+Workers scale independently of the API. This measures the difference: the same
+six documents processed first by two workers, then by one, with an artificial
+delay so the work is long enough to observe.
+
+```bash
+OKF_PROCESSING_DELAY=10s docker compose up -d --scale worker=2 worker
+sleep 6
+
+rm -f .jobs
+START=$(date +%s)
+for f in docs/filesTest/0*; do
+  case "$f" in *.txt) CT=text/plain;; *) CT=text/markdown;; esac
+  JOB=$(curl -s -X POST http://localhost:8080/documents \
+    -H "Authorization: Bearer $(cat .token)" \
+    -F "file=@$f;type=$CT" \
+    | sed -E 's/.*"jobId":"([^"]+)".*/\1/')
+  echo "$JOB $(basename "$f")" >> .jobs
+done
+
+while :; do
+  DONE=0
+  while read -r job name; do
+    S=$(curl -s http://localhost:8080/jobs/"$job" \
+      -H "Authorization: Bearer $(cat .token)" \
+      | grep -o '"status":"[^"]*"' | head -1)
+    case "$S" in *completed*) DONE=$((DONE+1));; esac
+  done < .jobs
+  printf '%s  completed: %d/6\n' "$(date +%T)" "$DONE"
+  [ "$DONE" -eq 6 ] && break
+  sleep 5
+done
+echo "total with 2 workers: $(( $(date +%s) - START ))s"
+```
+
+Jobs finish in pairs, because each worker holds one message at a time:
+
+```text
+22:07:49  completed: 0/6
+22:07:57  completed: 2/6
+22:08:05  completed: 2/6
+22:08:13  completed: 4/6
+22:08:21  completed: 6/6
+total with 2 workers: 38s
+```
+
+**Who processed what.** Each job must appear in exactly one worker's log:
+
+```bash
+while read -r job name; do
+  W1=$(docker logs okf-project-worker-1 --since 5m 2>&1 | grep -c "$job claimed")
+  W2=$(docker logs okf-project-worker-2 --since 5m 2>&1 | grep -c "$job claimed")
+  printf '%-24s worker-1=%s worker-2=%s total=%s\n' "$name" "$W1" "$W2" "$((W1+W2))"
+done < .jobs
+
+for c in okf-project-worker-1 okf-project-worker-2; do
+  printf '%s: %s jobs claimed\n' "$c" \
+    "$(docker logs $c --since 5m 2>&1 | grep -c 'claimed for processing')"
+done
+```
+
+```text
+01-breve.txt             worker-1=0 worker-2=1 total=1
+02-estructurado.md       worker-1=1 worker-2=0 total=1
+03-manual-tecnico.md     worker-1=0 worker-2=1 total=1
+04-preambulo.md          worker-1=1 worker-2=0 total=1
+05-titulo-con-enlace.md  worker-1=0 worker-2=1 total=1
+06-seccion-vacia.md      worker-1=1 worker-2=0 total=1
+
+okf-project-worker-1: 3 jobs claimed
+okf-project-worker-2: 3 jobs claimed
+```
+
+Every `total` is `1`: the work was shared, never duplicated. The 3/3 split
+comes from RabbitMQ's round robin and may vary slightly under uneven load —
+what must hold is that no job is claimed twice.
+
+**The baseline.** Re-run the same upload-and-wait block with a single worker:
+
+```bash
+OKF_PROCESSING_DELAY=10s docker compose up -d --scale worker=1 worker
+sleep 6
+# ...same initial upload and wait block...
+```
+
+```text
+total with 1 worker: 63s
+```
+
+Jobs now complete one by one instead of in pairs, and the batch takes roughly
+twice as long. The API was untouched throughout: only the worker count changed.
+
+**One bundle per job**, whatever the worker count:
+
+```bash
+IDS=$(cut -d' ' -f1 .jobs | sed "s/.*/'&'/" | paste -sd, -)
+docker compose exec -T postgres psql -U okf -d okf -c \
+  "SELECT j.id, j.status, count(b.id) AS bundles
+     FROM jobs j LEFT JOIN bundles b ON b.job_id = j.id
+    WHERE j.id IN ($IDS)
+    GROUP BY j.id, j.status ORDER BY j.id;" < /dev/null
+
+docker compose up -d --scale worker=1 worker   # back to one worker, no delay
+```
+
+Expected: six rows, all `completed`, all with `bundles = 1`.
+
+The `< /dev/null` matters. `docker compose exec -T` reads standard input, so
+inside a `while read ... done < .jobs` loop it swallows the remaining lines and
+the loop stops after the first job.
+
 ---
 
 ## Current Scope and Remaining Work
@@ -1043,7 +1159,7 @@ publication is impossible even if every check above were bypassed.
 2. ~~Review bundle conversion with representative configurations.~~ **Done** — see [Segmentation into logical units](#segmentation-into-logical-units).
 3. ~~Run and document the six verifiable conditions required by the project specification.~~ **Done** — see [The six verifiable conditions](#the-six-verifiable-conditions).
 4. ~~Verify that a clean environment can be configured and started using only this README, `.env.example`, and `docker compose up -d --build`.~~ **Done** — see [Verifying from a clean environment](#verifying-from-a-clean-environment).
-5. Demonstrate horizontal worker scaling with at least two workers while preserving `prefetch = 1`, atomic claiming and no duplicate final bundle.
+5. ~~Demonstrate horizontal worker scaling with at least two workers while preserving `prefetch = 1`, atomic claiming and no duplicate final bundle.~~ **Done** — see [Scaling workers horizontally](#11-scaling-workers-horizontally).
 6. Define and verify the completion-notification/status contract around `jobId` so the frontend can detect completion/failure and redirect to the bundle when appropriate. A normal Jobs list/view must remain available independently of notifications.
 
 ### Bonus / optional if time remains
@@ -1055,6 +1171,38 @@ publication is impossible even if every check above were bypassed.
 - Separate OKF conformity score/reporting.
 - Streaming downloads for large bundles.
 - Additional real-time notification UX beyond the required status-following flow.
+
+### Known limitations
+
+Deliberate boundaries of the current scope. Isolation and correctness hold in
+every case below — what is missing is fairness and hardening.
+
+**No fairness between users.** All jobs share a single `document_jobs` queue,
+served first in, first out. Total throughput is the number of workers, since
+`prefetch = 1` gives each worker one job at a time. If one user uploads a
+hundred documents and another uploads one right after, the second waits behind
+all hundred. `prefetch = 1` distributes work fairly *between workers*, not
+between users, and there are no quotas or rate limiting. Per-user queues or
+priorities would solve it and are far outside this scope.
+
+**Uploads are held in memory.** `multipart` buffers each upload before the API
+streams it to MinIO, so concurrent uploads cost roughly their size in RAM. The
+10 MB limit keeps this bounded. Note that raising `maxUploadSize` above 32 MB
+would make `multipart` spill temporary files onto the container's local disk,
+which the architecture explicitly avoids — the limit is what keeps that from
+happening.
+
+**Upload retries are not idempotent.** `idempotency_key` is a fresh UUID per
+call, so it enforces uniqueness but never deduplicates: retrying `POST
+/documents` creates a second document and a second job. This is separate from
+queue redelivery idempotency, which *is* implemented and verified — see
+[§10](#10-no-duplicate-effect-on-redelivery). A client-supplied idempotency key
+would be the fix; in the meantime the frontend must disable the upload control
+after the first click.
+
+**Segmentation covers Markdown headings only.** Nested hierarchies, embedded
+assets and PDF/DOCX/EPUB converters are out of scope. See
+[Segmentation into logical units](#segmentation-into-logical-units).
 
 ---
 
@@ -1133,7 +1281,7 @@ The HTTP request does not execute the conversion. The API returns the created `j
 - Representative conversion configurations ✅.
 - Six specification verification scenarios ✅.
 - README reproducibility from a clean environment ✅.
-- Two-worker scalability demonstration.
+- Two-worker scalability demonstration ✅.
 - `jobId` completion/status notification contract while preserving a general Jobs view.
 
 ### Milestone 8 — Functional frontend ⏳
@@ -1187,15 +1335,14 @@ Bundle in MinIO + metadata in PostgreSQL
 COMPLETED / FAILED
 ```
 
-**Backend/rubric closure is in progress**, four of six items done: the
+**Backend/rubric closure is in progress**, five of six items done: the
 validation classification, the conversion review against representative
 document configurations, the six verifiable conditions — each with a
 reproducible procedure in [Manual verification with curl](#manual-verification-with-curl)
-— and reproducibility from a clean environment.
+— reproducibility from a clean environment, and horizontal worker scaling.
 
-Next: a two-worker scalability demonstration and the `jobId` notification
-contract. The frontend starts only after the remaining backend checklist has
-been verified.
+Next: the `jobId` notification contract the frontend will consume. The frontend
+starts only after it has been defined and verified.
 
 ---
 

@@ -1018,7 +1018,7 @@ Orden acordado:
 2. **Conversión y generación del bundle. COMPLETADO Y VERIFICADO** (ver sección 8.2).
 3. **Seis condiciones verificables del PDF. COMPLETADO Y VERIFICADO** (ver sección 8.3).
 4. **Reproducibilidad desde entorno limpio. COMPLETADO Y VERIFICADO** (ver sección 8.4).
-5. **Escalabilidad con dos workers.** Ejecutar al menos dos workers y demostrar distribución de Jobs, manteniendo `prefetch = 1`, claim atómico y ausencia de duplicados.
+5. **Escalabilidad con dos workers. COMPLETADO Y VERIFICADO** (ver sección 8.5).
 6. **Contrato de notificación de finalización.** Definir y probar el comportamiento que utilizará el frontend para seguir un `jobId`, detectar `completed`/`failed` y permitir redirigir al usuario a la descarga del bundle. Debe mantenerse también una vista/listado general de Jobs; la notificación no reemplaza la navegación a `/jobs`.
 
 ### 8.1 Clasificación de validación del bundle --- COMPLETADO Y VERIFICADO
@@ -1523,6 +1523,125 @@ El procedimiento quedó documentado en el README como *Verifying from a clean
 environment*, y sirve directamente para el segmento 3 del video, que exige
 mostrar el despliegue con un solo comando desde un entorno limpio.
 
+### 8.5 Escalabilidad con dos workers --- COMPLETADO Y VERIFICADO
+
+Punto 5 del checklist. La sección 8.3 ya mostraba dos workers compitiendo por
+el mismo Job; faltaba demostrar el reparto de Jobs distintos y el efecto real
+de escalar.
+
+#### Medición
+
+Los seis documentos de prueba, con un retardo artificial de 10 s para que el
+trabajo dure lo suficiente como para observarse:
+
+``` text
+2 workers                      1 worker
+22:07:49  completados 0/6      22:09:16  completados 0/6
+22:07:57  completados 2/6      22:09:24  completados 1/6
+22:08:05  completados 2/6      22:09:32  completados 1/6
+22:08:13  completados 4/6      22:09:40  completados 2/6
+22:08:21  completados 6/6      22:09:48  completados 3/6
+                               22:09:57  completados 4/6
+TOTAL 38 s                     22:10:05  completados 5/6
+                               22:10:12  completados 6/6
+                               TOTAL 63 s
+```
+
+Con dos workers los Jobs terminan de dos en dos, porque `prefetch = 1` hace que
+cada worker retenga un solo mensaje a la vez. Con uno terminan de uno en uno y
+el lote tarda aproximadamente el doble. La API no se tocó en ningún momento:
+solo cambió el número de workers.
+
+#### Reparto y ausencia de duplicados
+
+``` text
+01-breve.txt             worker-1=0 worker-2=1 total=1
+02-estructurado.md       worker-1=1 worker-2=0 total=1
+03-manual-tecnico.md     worker-1=0 worker-2=1 total=1
+04-preambulo.md          worker-1=1 worker-2=0 total=1
+05-titulo-con-enlace.md  worker-1=0 worker-2=1 total=1
+06-seccion-vacia.md      worker-1=1 worker-2=0 total=1
+
+worker-1: 3 jobs reclamados
+worker-2: 3 jobs reclamados
+```
+
+Cada `total` es 1: el trabajo se repartió y ningún Job se reclamó dos veces. El
+reparto 3/3 viene del round robin de RabbitMQ y puede variar con carga
+desigual; lo que no puede variar es que ningún Job se reclame dos veces.
+
+Un bundle por Job, con cualquier número de workers:
+
+``` text
+6 filas, todas completed, todas con bundles = 1
+```
+
+#### Detalle encontrado al escribir el procedimiento
+
+`docker compose exec -T` lee de la entrada estándar, así que dentro de un bucle
+`while read ... done < .jobs` se traga las líneas restantes y el bucle termina
+tras el primer Job. El procedimiento del README usa `< /dev/null` en esa
+llamada y lo explica, para que la comprobación no dé un falso correcto.
+
+### 8.6 Comportamiento con múltiples usuarios --- REVISADO
+
+Revisión hecha a raíz de la pregunta "¿qué pasa con varios usuarios subiendo
+documentos a la vez?". Se auditó el código en lugar de suponer.
+
+#### Lo que aguanta
+
+-   El aislamiento no depende del timing: toda consulta filtra por `owner_id` y
+    las claves de almacenamiento van namespaceadas
+    (`documents/{ownerID}/{uuid}/{filename}`, `bundles/{ownerID}/{jobID}/`).
+    Dos usuarios que suban un archivo con el mismo nombre no colisionan.
+-   La API no comparte estado mutable entre peticiones: Go atiende cada una en
+    su goroutine. Escalarla a varias réplicas no requeriría cambios.
+-   El claim atómico ya cubre el único punto donde dos procesamientos podrían
+    pisarse.
+
+#### Corregido: pool de conexiones sin límite
+
+`database/sql` no limita las conexiones abiertas por defecto. Bajo concurrencia
+la API podía superar el `max_connections` de PostgreSQL (100 por defecto) y
+fallar con `too many clients already`: un fallo por agotamiento, no por carga.
+
+Se acotó el pool en `database.New`:
+
+``` text
+SetMaxOpenConns(25)
+SetMaxIdleConns(5)
+SetConnMaxLifetime(5 * time.Minute)
+```
+
+25 por proceso deja margen para la API y varios workers sobre la configuración
+por defecto de PostgreSQL. Con el tope, el exceso de peticiones espera turno en
+lugar de agotar el servidor. `TestConnectionPoolIsBounded` comprueba el límite
+contra PostgreSQL real.
+
+#### Limitaciones aceptadas y documentadas
+
+Quedan registradas en el README como *Known limitations*, para el cierre del
+video que exige declarar limitaciones conocidas:
+
+-   **Sin equidad entre usuarios.** Una única cola `document_jobs` FIFO. El
+    throughput total es el número de workers. Si un usuario encola cien
+    documentos, el siguiente espera detrás de los cien: head-of-line blocking.
+    `prefetch = 1` reparte con equidad entre *workers*, no entre usuarios, y no
+    hay cuotas ni rate limiting. Colas por usuario o prioridades lo
+    resolverían, muy por encima del alcance.
+-   **Uploads en memoria.** `multipart` bufferiza cada subida antes de que la
+    API la envíe a MinIO. El límite de 10 MB lo mantiene acotado. Importante:
+    subir `maxUploadSize` por encima de 32 MB haría que `multipart` escribiera
+    archivos temporales en el disco local del contenedor, justo lo que la
+    arquitectura evita; el límite es lo que lo impide.
+-   **El reintento de upload no es idempotente.** `idempotency_key` es un UUID
+    nuevo en cada llamada, así que garantiza unicidad pero nunca deduplica:
+    reintentar `POST /documents` crea un segundo documento y un segundo Job.
+    Es distinto de la idempotencia ante reentrega de la cola, que sí está
+    implementada y verificada. El arreglo correcto sería una clave de
+    idempotencia suministrada por el cliente; mientras tanto, el frontend debe
+    deshabilitar el control de subida tras el primer clic.
+
 ## Milestone 8 --- Frontend funcional
 
 **PENDIENTE.** Se inicia únicamente después del checklist previo de backend.
@@ -1536,6 +1655,7 @@ Alcance mínimo alineado con la rúbrica:
 - visualización de estados `queued`, `processing`, `completed` y `failed`;
 - notificación cuando el Job finaliza;
 - posibilidad de redirigir desde la notificación al resultado del Job sin eliminar la vista general de Jobs;
+- deshabilitar el control de subida tras el primer clic: el reintento de `POST /documents` no es idempotente (ver sección 8.6);
 - disponibilidad y descarga de `GET /jobs/{id}/bundle` cuando el Job esté completado;
 - manejo claro de errores de autorización y procesamiento.
 
@@ -1625,7 +1745,7 @@ Antes de iniciar M8 se completará el **checklist de cierre backend y rúbrica**
 2. ~~revisar conversión/generación del bundle con distintas configuraciones representativas~~ --- COMPLETADO (sección 8.2);
 3. ~~ejecutar y documentar las seis condiciones verificables del PDF~~ --- COMPLETADO (sección 8.3);
 4. ~~verificar README + `.env.example` desde un entorno limpio~~ --- COMPLETADO (sección 8.4);
-5. demostrar procesamiento con dos workers y ausencia de duplicados;
+5. ~~demostrar procesamiento con dos workers y ausencia de duplicados~~ --- COMPLETADO (sección 8.5);
 6. definir/probar el contrato de seguimiento y notificación por `jobId`, conservando también la vista general de Jobs;
 7. iniciar M8 --- frontend funcional.
 
@@ -1692,9 +1812,9 @@ Autenticación/autorización      ██████████  completa para 
 Documentos + MinIO              ██████████  completo y verificado
 Pipeline OKF                    ██████████  completo y verificado E2E
 Confiabilidad M7                ██████████  completa y verificada
-Cierre backend contra rúbrica   ████████░░  en curso (4/6)
+Cierre backend contra rúbrica   █████████░  en curso (5/6)
 Frontend funcional M8           ░░░░░░░░░░  pendiente
 Entrega/sustentación            ░░░░░░░░░░  pendiente
 ```
 
-**Siguiente acción:** punto 5 del checklist --- demostrar el procesamiento con dos workers, comprobando distribución de Jobs y ausencia de duplicados con `prefetch = 1` y claim atómico. Parte de la evidencia ya existe: la sección 8.3 documenta dos workers compitiendo por el mismo Job; falta demostrar el reparto de Jobs distintos entre ambos.
+**Siguiente acción:** punto 6 del checklist --- definir y probar el contrato de seguimiento y notificación por `jobId` que consumirá el frontend: cómo detecta `completed`/`failed`, cómo redirige a la descarga del bundle y cómo se conserva la vista general de Jobs. Es el último punto antes de M8.
