@@ -590,6 +590,7 @@ owner: a resource belonging to somebody else answers `404`, never `403`.
 | `GET` | `/jobs` | List every job of the user. The general Jobs view. |
 | `GET` | `/jobs/{id}` | Follow one job. |
 | `GET` | `/jobs/{id}/bundle` | Download the bundle as a ZIP. |
+| `GET` | `/stats` | Job counts by status, for a dashboard header. |
 | `GET` | `/health` | Liveness, unauthenticated. |
 
 ### Job states
@@ -650,6 +651,11 @@ offer a download that answers `409`.
 A bundle with warnings is still downloadable: `valid_with_warnings` is a
 successful outcome, not a partial failure.
 
+`download_url` needs the `Authorization` header, so it does not work as an
+`<a href>`: the browser does not send the header when following a link, and the
+download arrives as a 13-byte `401`. Request it with `fetch` carrying the token
+and turn the response into a download.
+
 ### The Jobs list
 
 `GET /jobs` is normal navigation and exists independently of whether the client
@@ -685,6 +691,19 @@ Guarantees the client can rely on:
 - always a JSON array — a user with no jobs gets `[]`, never `null`;
 - only the authenticated owner's jobs;
 - `bundle` is `null` until one exists.
+
+### Flow metrics
+
+`GET /stats` summarises the owner's jobs, for a dashboard header that shows the
+asynchronous flow at a glance:
+
+```json
+{ "jobs": { "queued": 2, "processing": 1, "completed": 84, "failed": 2, "total": 89 } }
+```
+
+Every counter is always present, zero included: a view rendering them never has
+to tell "zero" apart from "absent". Like every other endpoint it is scoped to
+the authenticated owner.
 
 ### Error responses
 
@@ -1291,13 +1310,31 @@ the loop stops after the first job.
 
 ### Bonus / optional if time remains
 
-- Additional input format.
-- `assets/` extraction and references.
-- Job cancellation.
-- Metrics and additional observability.
-- Separate OKF conformity score/reporting.
-- Streaming downloads for large bundles.
-- Additional real-time notification UX beyond the required status-following flow.
+Ordered by implementation cost. None of these come before the functional
+frontend, which is a rubric criterion of its own and is not started yet.
+
+- ~~**Basic flow metrics.**~~ **Done** — `GET /stats`, see
+  [Flow metrics](#flow-metrics).
+
+- **Real-time completion notice.** The required behaviour is polling
+  `GET /jobs/{id}` until `terminal` is true, as described in
+  [API contract](#api-contract). The frontend should keep that behind a single
+  abstraction — a `useJobStatus(jobId)` hook — so the mechanism can be replaced
+  without touching any component. The cheap upgrade is then one SSE endpoint
+  that polls the database server-side and pushes each change: no worker-to-API
+  messaging, no `LISTEN/NOTIFY`, no extra queue, and the client abstraction
+  stays the same. Retrofitting a push model onto a UI written directly against
+  polling is a rewrite of its state handling, which is why the abstraction
+  matters even if the upgrade never happens.
+
+- **`assets/` extraction and references.** Would first require accepting ZIP
+  uploads or embedded base64: with a single uploaded document there are no
+  assets to extract, since any image link points at a file that never arrived.
+
+- **Additional input formats.** Not strictly a bonus — the specification scores
+  it inside the document conversion criterion. HTML done properly needs
+  `golang.org/x/net/html` and a decision on how to render the body into
+  Markdown; a regex version is fragile and it shows.
 
 ### Known limitations
 

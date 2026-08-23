@@ -131,6 +131,8 @@ func main() {
 
 	jobHandler := httpapi.NewJobHandler(db)
 
+	statsHandler := httpapi.NewStatsHandler(db)
+
 	//endpoints
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -156,6 +158,13 @@ func main() {
 		httpapi.AuthMiddleware(
 			tokenManager,
 			jobHandler.List,
+		),
+	)
+
+	http.HandleFunc("GET /stats",
+		httpapi.AuthMiddleware(
+			tokenManager,
+			statsHandler.Get,
 		),
 	)
 

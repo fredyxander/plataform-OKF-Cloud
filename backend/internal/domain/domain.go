@@ -47,6 +47,19 @@ type Job struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+// JobStats resume el flujo de trabajos de un propietario.
+//
+// Todos los estados aparecen siempre, incluso con cero Jobs: una vista
+// que muestre contadores no debería tener que distinguir entre "cero" y
+// "ausente".
+type JobStats struct {
+	Queued     int `json:"queued"`
+	Processing int `json:"processing"`
+	Completed  int `json:"completed"`
+	Failed     int `json:"failed"`
+	Total      int `json:"total"`
+}
+
 // JobListItem es un Job con el contexto mínimo que necesita una vista
 // de lista: qué documento lo originó y si ya produjo un bundle.
 //
