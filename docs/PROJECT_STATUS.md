@@ -1017,7 +1017,7 @@ Orden acordado:
 1. **Clasificación de validación del bundle. COMPLETADO Y VERIFICADO** (ver sección 8.1).
 2. **Conversión y generación del bundle. COMPLETADO Y VERIFICADO** (ver sección 8.2).
 3. **Seis condiciones verificables del PDF. COMPLETADO Y VERIFICADO** (ver sección 8.3).
-4. **README reproducible desde entorno limpio.** Verificar que una persona pueda levantar y probar el sistema con `docker compose up -d --build` siguiendo únicamente el README y `.env.example`.
+4. **Reproducibilidad desde entorno limpio. COMPLETADO Y VERIFICADO** (ver sección 8.4).
 5. **Escalabilidad con dos workers.** Ejecutar al menos dos workers y demostrar distribución de Jobs, manteniendo `prefetch = 1`, claim atómico y ausencia de duplicados.
 6. **Contrato de notificación de finalización.** Definir y probar el comportamiento que utilizará el frontend para seguir un `jobId`, detectar `completed`/`failed` y permitir redirigir al usuario a la descarga del bundle. Debe mantenerse también una vista/listado general de Jobs; la notificación no reemplaza la navegación a `/jobs`.
 
@@ -1416,6 +1416,113 @@ Los procedimientos se reescribieron para poder pegarse y ejecutarse de una vez:
     del Job;
 -   los archivos auxiliares están en `.gitignore`.
 
+### 8.4 Reproducibilidad desde entorno limpio --- COMPLETADO Y VERIFICADO
+
+Punto 4 del checklist.
+
+#### Problema encontrado
+
+`docker-compose.yml` definía las credenciales en dos sitios incompatibles:
+
+``` text
+postgres   POSTGRES_PASSWORD: okf          <- literal
+rabbitmq   RABBITMQ_DEFAULT_USER: okf      <- literal
+api        DATABASE_URL: postgres://okf:okf@postgres:5432/okf   <- literal
+api        RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@...
+```
+
+Quien clonara el repositorio y cambiara una contraseña en su `.env` siguiendo
+el README obtenía un sistema que no arrancaba: el broker seguía con la
+credencial literal mientras la API intentaba conectarse con la del `.env`.
+
+Además `.env.example` declaraba `MINIO_ACCESS_KEY` y `MINIO_SECRET_KEY` como
+copias de `MINIO_ROOT_USER` y `MINIO_ROOT_PASSWORD`. La misma credencial en dos
+variables: cambiar solo una rompía el acceso al object storage.
+
+#### Corrección
+
+Cada credencial se define una sola vez en `.env` y se propaga:
+
+``` text
+POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+    -> contenedor postgres
+    -> healthcheck pg_isready
+    -> DATABASE_URL de API y worker
+
+RABBITMQ_USER / RABBITMQ_PASSWORD
+    -> contenedor rabbitmq
+    -> RABBITMQ_URL de API y worker
+    -> consola de management
+
+MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
+    -> contenedor minio
+    -> MINIO_ACCESS_KEY / MINIO_SECRET_KEY de API y worker
+```
+
+Se eliminaron `MINIO_ACCESS_KEY` y `MINIO_SECRET_KEY` de `.env.example`. Las
+variables que compose necesita y las que `.env.example` declara coinciden
+exactamente: ni sobra ni falta ninguna.
+
+Propagación comprobada sobrescribiendo las credenciales:
+
+``` text
+DATABASE_URL: postgres://otro:clave123@postgres:5432/otradb?sslmode=disable
+RABBITMQ_URL: amqp://ruser:rpass@rabbitmq:5672/
+MINIO_ACCESS_KEY: miniouser
+pg_isready -U otro -d otradb
+```
+
+#### README
+
+La sección de configuración pedía crear un `.env` a mano y mostraba un ejemplo
+que omitía `JWT_SECRET`, `MINIO_ENDPOINT`, `MINIO_USE_SSL` y `MINIO_BUCKET`:
+seguirlo al pie de la letra no levantaba el sistema. Ahora la instrucción es
+`cp .env.example .env` y `.env.example` es la única fuente de verdad, con cada
+variable comentada.
+
+También se corrigieron los requisitos: no hace falta Go ni Node para ejecutar
+ni probar la plataforma, solo Docker y Compose v2. Se añadió que las pruebas
+manuales usan `curl` y `unzip`, ambos disponibles en Git Bash.
+
+#### Verificación desde cero
+
+Se levantó la plataforma completa usando únicamente `.env.example`, bajo un
+nombre de proyecto distinto para no destruir los datos locales:
+
+``` text
+docker compose stop
+docker compose -p okf-clean --env-file .env.example up -d --build
+```
+
+Resultado sobre una base de datos y un object storage vacíos:
+
+``` text
+migration applied: 001_init.sql
+migration applied: 002_bundle_validation.sql
+MinIO connected and bucket ready
+API listening on :8080
+worker waiting for jobs
+
+frontend (5173)        200
+rabbitmq mgmt (15672)  200
+minio console (9001)   200
+
+registro + login          usuario creado, JWT de 254 caracteres
+03-manual-tecnico.md      completed, 4 conceptos, valid, descarga 200
+bundle descargado         index.md, log.md, concept-01..04.md
+los seis documentos       idénticos a la tabla esperada
+```
+
+No hizo falta ningún paso de migración aparte: la API aplica el esquema al
+arrancar.
+
+La pila limpia se eliminó con `down -v` y la original se restauró intacta
+(171 usuarios, 155 jobs, 89 bundles).
+
+El procedimiento quedó documentado en el README como *Verifying from a clean
+environment*, y sirve directamente para el segmento 3 del video, que exige
+mostrar el despliegue con un solo comando desde un entorno limpio.
+
 ## Milestone 8 --- Frontend funcional
 
 **PENDIENTE.** Se inicia únicamente después del checklist previo de backend.
@@ -1517,7 +1624,7 @@ Antes de iniciar M8 se completará el **checklist de cierre backend y rúbrica**
 1. ~~revisar `VALID / VALID_WITH_WARNINGS / INVALID`~~ --- COMPLETADO (sección 8.1);
 2. ~~revisar conversión/generación del bundle con distintas configuraciones representativas~~ --- COMPLETADO (sección 8.2);
 3. ~~ejecutar y documentar las seis condiciones verificables del PDF~~ --- COMPLETADO (sección 8.3);
-4. verificar README + `.env.example` desde un entorno limpio;
+4. ~~verificar README + `.env.example` desde un entorno limpio~~ --- COMPLETADO (sección 8.4);
 5. demostrar procesamiento con dos workers y ausencia de duplicados;
 6. definir/probar el contrato de seguimiento y notificación por `jobId`, conservando también la vista general de Jobs;
 7. iniciar M8 --- frontend funcional.
@@ -1585,9 +1692,9 @@ Autenticación/autorización      ██████████  completa para 
 Documentos + MinIO              ██████████  completo y verificado
 Pipeline OKF                    ██████████  completo y verificado E2E
 Confiabilidad M7                ██████████  completa y verificada
-Cierre backend contra rúbrica   ███████░░░  en curso (3/6)
+Cierre backend contra rúbrica   ████████░░  en curso (4/6)
 Frontend funcional M8           ░░░░░░░░░░  pendiente
 Entrega/sustentación            ░░░░░░░░░░  pendiente
 ```
 
-**Siguiente acción:** punto 4 del checklist --- verificar que una persona pueda levantar y probar el sistema desde un entorno limpio siguiendo únicamente el README y `.env.example`. Hay un problema ya detectado: `docker-compose.yml` tiene las credenciales de `postgres` y `rabbitmq` hardcodeadas mientras `api` y `worker` las leen de `.env`, de modo que cambiar una credencial en `.env` rompe el arranque.
+**Siguiente acción:** punto 5 del checklist --- demostrar el procesamiento con dos workers, comprobando distribución de Jobs y ausencia de duplicados con `prefetch = 1` y claim atómico. Parte de la evidencia ya existe: la sección 8.3 documenta dos workers compitiendo por el mismo Job; falta demostrar el reparto de Jobs distintos entre ambos.

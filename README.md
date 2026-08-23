@@ -212,44 +212,49 @@ Shared application code is located under `internal/`.
 
 ## Requirements
 
-To run the complete platform locally, only the following tools are required:
+To run the complete platform, only the following are required:
 
-- Docker
-- Docker Compose
+- Docker Engine
+- Docker Compose v2 (the `docker compose` subcommand, not `docker-compose`)
 
-For development outside containers:
+The manual verification commands additionally use `curl` and `unzip`. On
+Windows both ship with Git Bash, which is also the shell those commands assume.
 
-- Go
-- Node.js
-- npm
+Nothing else is needed: Go and Node are used inside the build images, so no
+local toolchain is required to run or test the platform. They are only needed
+to develop outside containers, and the Go test suite also needs the stack
+running, since it exercises PostgreSQL and MinIO for real.
 
 ---
 
 ## Environment Configuration
 
-Create a `.env` file in the project root.
+Copy the example file and you are done — it already contains working values for
+a local run:
 
-Example:
-
-```env
-POSTGRES_DB=okf
-POSTGRES_USER=okf
-POSTGRES_PASSWORD=change-me
-
-RABBITMQ_USER=okf
-RABBITMQ_PASSWORD=change-me
-
-MINIO_ROOT_USER=okfadmin
-MINIO_ROOT_PASSWORD=change-me
+```bash
+cp .env.example .env
 ```
 
-Do not commit `.env` files containing credentials.
+Every variable in `.env.example` is required. `docker compose` substitutes them
+into `docker-compose.yml`, so a missing one leaves a service without its
+credentials and the stack fails to start. Credentials are defined once and
+propagate consistently: `POSTGRES_*` configures the database container *and*
+builds the `DATABASE_URL` used by the API and the worker, and the same holds
+for RabbitMQ and MinIO. Change a password in `.env` and every consumer of it
+follows.
 
-An `.env.example` file is provided to document the required configuration.
+Two optional variables control the demonstration modes and are empty by
+default. Setting them changes how the worker behaves, so leave them empty for
+normal operation:
 
-`OKF_FAULT_INJECTION` is optional and only used to demonstrate the incomplete
-bundle case. Leave it empty for normal operation. See
-[Bundle validation and result classification](#bundle-validation-and-result-classification).
+| Variable | Purpose | Section |
+| --- | --- | --- |
+| `OKF_FAULT_INJECTION` | Degrades the generated bundle to show that an invalid one is not published. | [§7](#7-rejected-bundle) |
+| `OKF_PROCESSING_DELAY` | Slows the worker down so the `processing` state is observable. | [§9](#9-effective-asynchrony) |
+
+Do not commit `.env`: it is the only file of the two that holds real
+credentials, and it is listed in `.gitignore`.
 
 ---
 
@@ -257,11 +262,14 @@ bundle case. Leave it empty for normal operation. See
 
 ### Build and start
 
-From the project root:
+From the project root, with `.env` already in place:
 
 ```bash
 docker compose up -d --build
 ```
+
+The first run builds the images and takes a few minutes. The API applies its
+database migrations on startup, so there is no separate migration step.
 
 Check the status of all containers:
 
@@ -279,6 +287,42 @@ postgres
 rabbitmq
 minio
 ```
+
+### Verifying from a clean environment
+
+To prove the repository really is reproducible, bring the whole platform up
+from nothing but `.env.example`. Running it under a **different project name**
+with `--env-file` gives a completely separate set of volumes, so an existing
+local stack keeps its data:
+
+```bash
+docker compose stop                    # free the host ports, keep the volumes
+docker compose -p okf-clean --env-file .env.example up -d --build
+```
+
+The API creates its own schema on first start:
+
+```bash
+docker compose -p okf-clean logs api | grep -E "migration|listening"
+```
+
+```text
+migration applied: 001_init.sql
+migration applied: 002_bundle_validation.sql
+API listening on :8080
+```
+
+Run any section of [Manual verification with curl](#manual-verification-with-curl)
+against it, then discard the clean stack and bring your own back:
+
+```bash
+docker compose -p okf-clean --env-file .env.example down -v
+docker compose start
+```
+
+If instead you want to reset your **own** environment, `docker compose down -v`
+deletes its volumes — every user, document, job and bundle. `docker compose
+down` without `-v` only removes the containers and keeps the data.
 
 ---
 
@@ -998,7 +1042,7 @@ publication is impossible even if every check above were bypassed.
 1. ~~Review bundle validation classification and explicitly support `VALID / VALID_WITH_WARNINGS / INVALID`.~~ **Done** — see [Bundle validation and result classification](#bundle-validation-and-result-classification).
 2. ~~Review bundle conversion with representative configurations.~~ **Done** — see [Segmentation into logical units](#segmentation-into-logical-units).
 3. ~~Run and document the six verifiable conditions required by the project specification.~~ **Done** — see [The six verifiable conditions](#the-six-verifiable-conditions).
-4. Verify that a clean environment can be configured and started using only this README, `.env.example`, and `docker compose up -d --build`.
+4. ~~Verify that a clean environment can be configured and started using only this README, `.env.example`, and `docker compose up -d --build`.~~ **Done** — see [Verifying from a clean environment](#verifying-from-a-clean-environment).
 5. Demonstrate horizontal worker scaling with at least two workers while preserving `prefetch = 1`, atomic claiming and no duplicate final bundle.
 6. Define and verify the completion-notification/status contract around `jobId` so the frontend can detect completion/failure and redirect to the bundle when appropriate. A normal Jobs list/view must remain available independently of notifications.
 
@@ -1088,7 +1132,7 @@ The HTTP request does not execute the conversion. The API returns the created `j
 - `VALID / VALID_WITH_WARNINGS / INVALID` classification ✅.
 - Representative conversion configurations ✅.
 - Six specification verification scenarios ✅.
-- README reproducibility from a clean environment.
+- README reproducibility from a clean environment ✅.
 - Two-worker scalability demonstration.
 - `jobId` completion/status notification contract while preserving a general Jobs view.
 
@@ -1143,14 +1187,15 @@ Bundle in MinIO + metadata in PostgreSQL
 COMPLETED / FAILED
 ```
 
-**Backend/rubric closure is in progress**, three of six items done: the
+**Backend/rubric closure is in progress**, four of six items done: the
 validation classification, the conversion review against representative
-document configurations, and the six verifiable conditions, each with a
-reproducible procedure in [Manual verification with curl](#manual-verification-with-curl).
+document configurations, the six verifiable conditions — each with a
+reproducible procedure in [Manual verification with curl](#manual-verification-with-curl)
+— and reproducibility from a clean environment.
 
-Next: reproducibility from a clean environment, a two-worker scalability
-demonstration, and the `jobId` notification contract. The frontend starts only
-after the remaining backend checklist has been verified.
+Next: a two-worker scalability demonstration and the `jobId` notification
+contract. The frontend starts only after the remaining backend checklist has
+been verified.
 
 ---
 
