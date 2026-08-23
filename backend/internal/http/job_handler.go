@@ -21,11 +21,20 @@ func NewJobHandler(db *database.DB) *JobHandler {
 	}
 }
 
+// BundleResponse describe el bundle asociado a un Job.
+//
+// Validation transporta la clasificación completa
+// (valid / valid_with_warnings / invalid) para que el cliente pueda
+// distinguir un bundle publicado sin observaciones de uno publicado
+// con advertencias o rechazado.
+//
+// DownloadURL solo se envía cuando el bundle es realmente descargable.
 type BundleResponse struct {
-	ID           string `json:"id"`
-	ConceptCount int    `json:"concept_count"`
-	IsValid      bool   `json:"is_valid"`
-	DownloadURL  string `json:"download_url"`
+	ID           string                  `json:"id"`
+	ConceptCount int                     `json:"concept_count"`
+	IsValid      bool                    `json:"is_valid"`
+	Validation   domain.BundleValidation `json:"validation"`
+	DownloadURL  string                  `json:"download_url,omitempty"`
 }
 
 type JobDetailResponse struct {
@@ -42,16 +51,24 @@ func buildJobDetailResponse(
 		Bundle: nil,
 	}
 
-	if job.Status == domain.JobStatusCompleted && bundle != nil {
-		response.Bundle = &BundleResponse{
-			ID:           bundle.ID,
-			ConceptCount: bundle.ConceptCount,
-			IsValid:      bundle.IsValid,
-			DownloadURL: fmt.Sprintf(
-				"/jobs/%s/bundle",
-				job.ID,
-			),
-		}
+	if bundle == nil {
+		return response
+	}
+
+	response.Bundle = &BundleResponse{
+		ID:           bundle.ID,
+		ConceptCount: bundle.ConceptCount,
+		IsValid:      bundle.IsValid,
+		Validation:   bundle.Validation,
+	}
+
+	// La descarga solo se ofrece cuando el Job terminó correctamente y
+	// la validación permitió publicar el bundle.
+	if job.Status == domain.JobStatusCompleted && bundle.IsValid {
+		response.Bundle.DownloadURL = fmt.Sprintf(
+			"/jobs/%s/bundle",
+			job.ID,
+		)
 	}
 
 	return response
@@ -85,19 +102,26 @@ func (h *JobHandler) Get(w http.ResponseWriter, r *http.Request) {
 	// 2. Por defecto no hay Bundle asociado a la respuesta.
 	var bundle *domain.Bundle
 
-	// 3. Solo buscamos el Bundle si el Job ya terminó.
-	if job.Status == domain.JobStatusCompleted {
+	// 3. Buscamos el Bundle cuando el Job ya terminó.
+	//
+	//    También se consulta para un Job fallido: si la validación
+	//    rechazó el bundle, existe una fila que explica por qué, aunque
+	//    no sea descargable.
+	if job.Status == domain.JobStatusCompleted ||
+		job.Status == domain.JobStatusFailed {
 		bundle, err = h.db.GetBundleByJobID(
 			job.ID,
 			ownerID,
 		)
 
 		if err != nil {
-			log.Printf(
-				"completed job %s has no bundle: %v",
-				job.ID,
-				err,
-			)
+			if !errors.Is(err, database.ErrNotFound) {
+				log.Printf(
+					"could not load bundle of job %s: %v",
+					job.ID,
+					err,
+				)
+			}
 
 			bundle = nil
 		}

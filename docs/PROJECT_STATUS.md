@@ -977,21 +977,13 @@ GET  /jobs/{id}/bundle
 
 ### Alcance actual de segmentación
 
-La segmentación estructurada implementada reconoce encabezados Markdown H1. No se implementaron todavía reglas avanzadas para H2/H3, jerarquías complejas, assets embebidos ni conversores PDF/DOCX/EPUB. Para el alcance mínimo actual se mantienen Markdown y texto plano.
+La segmentación reconocía únicamente encabezados H1 al cerrar M6. El punto 2 del checklist de cierre backend la extendió a H1/H2/H3 eligiendo el nivel que realmente divide el documento (ver sección 8.2). Siguen fuera de alcance las jerarquías anidadas, los assets embebidos y los conversores PDF/DOCX/EPUB: se mantienen Markdown y texto plano.
 
 ### Aspectos de M6 resueltos posteriormente en M7
 
 Los riesgos principales que quedaron abiertos al terminar M6 fueron tratados en M7: idempotencia ante redelivery, prevención de procesamiento concurrente, retries limitados, DLQ y compensación de objetos parciales en MinIO.
 
-Queda pendiente antes del frontend una revisión funcional de la **clasificación del resultado de validación del bundle** para alinearla explícitamente con la rúbrica del proyecto:
-
-``` text
-VALID
-VALID_WITH_WARNINGS
-INVALID
-```
-
-La validación actual ya impide publicar bundles inválidos; el siguiente paso es revisar si la representación del resultado distingue de forma explícita un bundle válido con advertencias de uno plenamente válido.
+La clasificación del resultado de validación (`VALID / VALID_WITH_WARNINGS / INVALID`) quedó resuelta en el punto 1 del checklist de cierre backend. Ver la sección 8.1.
 
 ## Milestone 7 --- Confiabilidad del procesamiento
 
@@ -1018,16 +1010,293 @@ Con esto M7 se considera cerrado para el alcance académico del proyecto.
 
 ## Checklist obligatorio previo a M8 --- cierre backend y rúbrica
 
-**PENDIENTE.** Se realizará antes de comenzar el frontend para terminar primero el backend y dejar claros los contratos que consumirá React.
+**EN CURSO.** Se realizará antes de comenzar el frontend para terminar primero el backend y dejar claros los contratos que consumirá React.
 
 Orden acordado:
 
-1. **Clasificación de validación del bundle.** Revisar e implementar, si hace falta, la distinción explícita `VALID / VALID_WITH_WARNINGS / INVALID`, conservando la regla de que un bundle inválido no se publica ni puede descargarse.
-2. **Conversión y generación avanzada del bundle.** Revisar el comportamiento del conversor con configuraciones representativas: documento breve sin divisiones, documento con varias unidades, orden de conceptos, enlaces del índice y casos límite razonables. La implementación de formatos adicionales no es obligatoria en esta fase.
+1. **Clasificación de validación del bundle. COMPLETADO Y VERIFICADO** (ver sección 8.1).
+2. **Conversión y generación del bundle. COMPLETADO Y VERIFICADO** (ver sección 8.2).
 3. **Pruebas de las seis condiciones verificables del PDF.** Dejar evidencia reproducible de asincronía efectiva, documento breve, documento estructurado, bundle incompleto, aislamiento entre usuarios y ausencia de duplicados ante redelivery.
 4. **README reproducible desde entorno limpio.** Verificar que una persona pueda levantar y probar el sistema con `docker compose up -d --build` siguiendo únicamente el README y `.env.example`.
 5. **Escalabilidad con dos workers.** Ejecutar al menos dos workers y demostrar distribución de Jobs, manteniendo `prefetch = 1`, claim atómico y ausencia de duplicados.
 6. **Contrato de notificación de finalización.** Definir y probar el comportamiento que utilizará el frontend para seguir un `jobId`, detectar `completed`/`failed` y permitir redirigir al usuario a la descarga del bundle. Debe mantenerse también una vista/listado general de Jobs; la notificación no reemplaza la navegación a `/jobs`.
+
+### 8.1 Clasificación de validación del bundle --- COMPLETADO Y VERIFICADO
+
+Punto 1 del checklist. La validación pasó de devolver un `error` a devolver un
+resultado clasificado en los tres niveles que exige la rúbrica.
+
+#### Modelo
+
+`domain.BundleValidation` concentra el vocabulario y las reglas de decisión:
+
+``` text
+valid                -> estructura mínima correcta y sin observaciones
+valid_with_warnings  -> publicable, con observaciones registradas
+invalid              -> no se publica ni se habilita su descarga
+```
+
+`IsPublishable()` responde si el bundle puede almacenarse y descargarse.
+`Err()` produce el `error_message` del Job cuando el bundle es inválido.
+
+#### Validador
+
+`okf.ValidateBundle` ya no se detiene en el primer problema: recorre el bundle
+completo y acumula todos los hallazgos en una sola pasada.
+
+Errores (INVALID):
+
+-   `index.md` ausente o vacío;
+-   `log.md` ausente;
+-   cero conceptos;
+-   archivo de concepto declarado pero ausente;
+-   concepto no enlazado desde `index.md`;
+-   enlace de `index.md` que no resuelve a un archivo del bundle;
+-   archivos duplicados o sin nombre.
+
+Advertencias (VALID_WITH_WARNINGS):
+
+-   concepto sin contenido;
+-   `log.md` vacío (conversión sin trazabilidad);
+-   enlace del índice sin título;
+-   archivo presente que el índice no referencia.
+
+Los enlaces externos (`http://`, `https://`, `mailto:`) y las anclas internas
+se ignoran al resolver enlaces, porque no apuntan a archivos del bundle.
+
+Un documento breve sin divisiones produce un único concepto y se clasifica como
+`valid`: la rúbrica exige explícitamente que una sola unidad no genere ni
+fallos ni advertencias.
+
+#### Persistencia
+
+Migración `002_bundle_validation.sql`:
+
+``` text
+bundles.validation_status    TEXT   (valid | valid_with_warnings | invalid)
+bundles.validation_warnings  TEXT[]
+bundles.validation_errors    TEXT[]
+```
+
+`is_valid` se conserva como respuesta rápida a la pregunta "se puede
+descargar" y se deriva de `IsPublishable()`. Solo un bundle publicable recibe
+`published_at`.
+
+Un bundle rechazado se registra igualmente en PostgreSQL como evidencia de la
+validación, pero sin `published_at`, sin objetos en MinIO y sin descarga.
+
+#### Orden del pipeline
+
+La validación se movió delante de cualquier escritura en el object storage:
+
+``` text
+Convert -> BuildBundle -> ValidateBundle
+                              |
+              +---------------+---------------+
+           INVALID                      VALID / VALID_WITH_WARNINGS
+              |                                |
+   Bundle registrado sin publicar     PackageBundle -> MinIO -> Bundle metadata
+   Job -> FAILED + error_message      Job -> COMPLETED
+   Sin objetos en MinIO
+```
+
+Un bundle inválido no llega nunca al object storage.
+
+#### Contrato HTTP
+
+`GET /jobs/{id}` expone la clasificación completa:
+
+``` json
+{
+  "status": "completed",
+  "bundle": {
+    "concept_count": 3,
+    "is_valid": true,
+    "validation": { "status": "valid", "warnings": [], "errors": [] },
+    "download_url": "/jobs/{id}/bundle"
+  }
+}
+```
+
+`download_url` solo se envía cuando el Job está `completed` y el bundle es
+publicable. Para un Job `failed` con bundle rechazado, el detalle incluye la
+clasificación y sus errores, pero ninguna URL de descarga.
+`GET /jobs/{id}/bundle` responde `409 Conflict` sobre un bundle inválido.
+
+#### Inyección de fallo para la sustentación
+
+El pipeline siempre genera la estructura mínima, por lo que la condición
+verificable "bundle incompleto" no puede ocurrir por sí sola sobre el sistema
+desplegado. Se agregó una inyección de fallo controlada, desactivada salvo que
+el worker reciba `OKF_FAULT_INJECTION`:
+
+``` text
+(vacío)        -> pipeline normal
+drop-index     -> elimina index.md      -> invalid
+drop-log       -> elimina log.md        -> invalid
+empty-concept  -> vacía el concepto 1   -> valid_with_warnings
+```
+
+#### Verificación realizada
+
+Tests automáticos:
+
+-   documento breve -> `valid`, sin advertencias;
+-   documento estructurado -> `valid`;
+-   `index.md` ausente, `log.md` ausente, concepto no enlazado, enlace
+    colgante y archivo duplicado -> `invalid` y no publicable;
+-   concepto vacío, `log.md` vacío y archivo no referenciado ->
+    `valid_with_warnings` y publicable;
+-   enlaces externos del índice ignorados;
+-   acumulación de todos los errores en una sola pasada;
+-   inyección de fallo desactivada por defecto y cada modo produciendo su
+    clasificación esperada;
+-   round-trip de la clasificación en PostgreSQL;
+-   bundle inválido persistido sin `published_at` y con `is_valid = false`;
+-   contrato del detalle del Job para `valid`, `valid_with_warnings` e
+    `invalid`;
+-   suite `go test ./...` completa contra PostgreSQL y MinIO reales.
+
+End-to-end sobre el sistema desplegado:
+
+``` text
+breve.txt        -> completed, 1 concepto,  valid,                  descarga 200
+estructurado.md  -> completed, 3 conceptos, valid,                  descarga 200
+drop-index       -> failed,    invalid + "bundle is missing index.md",
+                    sin objetos en MinIO,                           descarga 409
+empty-concept    -> completed, valid_with_warnings + advertencia,   descarga 200
+```
+
+El índice del bundle estructurado conserva el orden del documento de origen y
+sus tres enlaces resuelven.
+
+#### Corrección adicional
+
+`.env.example` estaba listado en `.gitignore`, por lo que no viajaba en el
+repositorio pese a que el README lo referencia. Se retiró de `.gitignore` para
+no bloquear el punto 4 del checklist (reproducibilidad desde entorno limpio).
+
+### 8.2 Conversión y generación del bundle --- COMPLETADO Y VERIFICADO
+
+Punto 2 del checklist. Se auditó el conversor con configuraciones
+representativas y se corrigieron los defectos encontrados.
+
+#### Defectos detectados en la auditoría
+
+La auditoría se hizo ejecutando el conversor real sobre casos límite. Cuatro
+comportamientos eran incorrectos:
+
+1.  **Pérdida silenciosa de contenido.** El texto anterior al primer H1 se
+    descartaba por completo. Un documento con resumen introductorio perdía ese
+    resumen sin aviso.
+
+2.  **Bloques de código partidos.** Un comentario `# ...` dentro de un bloque
+    ```` ```bash ```` se trataba como encabezado H1. Un manual técnico se
+    partía en conceptos absurdos y el bloque de código quedaba roto.
+
+3.  **Título con enlace = bundle inválido.** Un título legítimo como
+    `# Ver [la fuente](https://x.org)` generaba un enlace anidado en
+    `index.md`, la resolución de enlaces fallaba y el bundle se clasificaba
+    como `invalid`.
+
+4.  **Contenido perdido tras un encabezado sin título.** Un `#` seguido solo de
+    espacios anulaba la unidad en curso y todo lo que venía después se
+    descartaba.
+
+#### Regla de segmentación
+
+El documento se divide por el **nivel de encabezado más alto que realmente lo
+divide**. Se intenta H1, luego H2 y luego H3.
+
+``` text
+# A / # B / # C            -> 3 unidades por H1
+# Título + ## A / ## B     -> 3 unidades: bloque del título, luego por H2
+## A / ## B (sin H1)       -> 2 unidades por H2
+un solo encabezado o nada  -> 1 unidad, documento completo
+```
+
+Esto resuelve el caso más habitual en documentación real: H1 como título del
+documento y H2 como secciones, que antes producía una sola unidad.
+
+Reglas adicionales:
+
+-   los encabezados dentro de bloques de código delimitados por ``` o `~~~` no
+    son encabezados;
+-   el texto anterior al primer encabezado forma su propia unidad;
+-   cada unidad conserva su encabezado, de modo que cada `concept-NN.md` es
+    Markdown autocontenido;
+-   los finales de línea de Windows se normalizan antes de segmentar;
+-   los títulos con sintaxis de enlace se sanean para la etiqueta del índice;
+-   el texto plano se conserva siempre como una única unidad;
+-   H4 en adelante no se considera unidad lógica.
+
+#### index.md y log.md
+
+`index.md` incorpora los datos del bundle además de la navegación ordenada:
+
+``` markdown
+# Index
+
+- Source: tecnico.md
+- Format: markdown
+- Concepts: 4
+
+## Concepts
+
+1. [Manual de despliegue](concept-01.md)
+2. [Requisitos](concept-02.md)
+```
+
+`log.md` pasó de tres líneas a la trazabilidad que pide la rúbrica: origen,
+operaciones aplicadas, unidades detectadas en orden y resultado de la
+validación. La sección de validación se añade después de validar, porque el
+resultado no existe antes; solo agrega texto a un archivo ya presente, por lo
+que no puede alterar la estructura ni los enlaces comprobados.
+
+#### Cambio de contrato interno
+
+`Convert` devuelve ahora un `okf.Conversion` (nombre, formato, conceptos y
+operaciones aplicadas) en lugar de solo `[]Concept`, y `BuildBundle` recibe esa
+conversión. Es lo que permite que `log.md` describa las transformaciones sin
+que el worker tenga que reconstruirlas.
+
+#### Efecto sobre la clasificación
+
+Como cada unidad conserva su encabezado, una sección con título pero sin cuerpo
+ya no parecía vacía. El validador ahora descarta el encabezado inicial antes de
+decidir si un concepto está vacío, de modo que esa unidad sigue produciendo la
+advertencia correspondiente y el bundle se clasifica `valid_with_warnings`.
+
+#### Verificación realizada
+
+Tests automáticos añadidos o reescritos:
+
+-   documento breve, documento estructurado y documento sin encabezados;
+-   preámbulo anterior al primer encabezado conservado;
+-   encabezados dentro de bloques ``` y `~~~` ignorados;
+-   segmentación por H2 cuando el H1 es el título del documento;
+-   segmentación por H2 cuando no hay H1, y por H3 cuando solo hay H3;
+-   H4 en adelante no segmenta;
+-   normalización de CRLF;
+-   encabezados con sangría y con cierre ATX (`## Título ##`);
+-   contenido conservado tras un encabezado sin título;
+-   orden de los enlaces del índice y datos del bundle en `index.md`;
+-   trazabilidad de `log.md` con operaciones y unidades detectadas;
+-   título con enlace saneado y bundle resultante `valid`;
+-   unidad sin título etiquetada de forma utilizable;
+-   `AppendValidationLog` no altera la clasificación ni el conjunto de archivos.
+
+End-to-end sobre el sistema desplegado, con un manual técnico real que combina
+H1 de título, secciones H2 y bloques de código:
+
+``` text
+tecnico.md -> completed, 4 conceptos, valid
+              segmentado por H2, el bloque bash intacto dentro de concept-02.md
+              index.md con datos + navegación ordenada
+              log.md con operaciones, unidades y resultado de validación
+breve.txt        -> completed, 1 concepto,  valid
+estructurado.md  -> completed, 3 conceptos, valid
+```
 
 ## Milestone 8 --- Frontend funcional
 
@@ -1127,8 +1396,8 @@ Los Milestones 1, 2, 3, 4, 5, 6 y 7 están completados y verificados.
 
 Antes de iniciar M8 se completará el **checklist de cierre backend y rúbrica** en este orden:
 
-1. revisar `VALID / VALID_WITH_WARNINGS / INVALID`;
-2. revisar conversión/generación del bundle con distintas configuraciones representativas;
+1. ~~revisar `VALID / VALID_WITH_WARNINGS / INVALID`~~ --- COMPLETADO (sección 8.1);
+2. ~~revisar conversión/generación del bundle con distintas configuraciones representativas~~ --- COMPLETADO (sección 8.2);
 3. ejecutar y documentar las seis condiciones verificables del PDF;
 4. verificar README + `.env.example` desde un entorno limpio;
 5. demostrar procesamiento con dos workers y ausencia de duplicados;
@@ -1198,9 +1467,9 @@ Autenticación/autorización      ██████████  completa para 
 Documentos + MinIO              ██████████  completo y verificado
 Pipeline OKF                    ██████████  completo y verificado E2E
 Confiabilidad M7                ██████████  completa y verificada
-Cierre backend contra rúbrica   ███░░░░░░░  pendiente
+Cierre backend contra rúbrica   █████░░░░░  en curso (2/6)
 Frontend funcional M8           ░░░░░░░░░░  pendiente
 Entrega/sustentación            ░░░░░░░░░░  pendiente
 ```
 
-**Siguiente acción:** revisar la clasificación del resultado de validación del bundle (`VALID / VALID_WITH_WARNINGS / INVALID`) antes de continuar con el resto del checklist de cierre backend.
+**Siguiente acción:** punto 3 del checklist --- dejar evidencia reproducible de las seis condiciones verificables del PDF: asincronía efectiva, documento breve, documento estructurado, bundle incompleto, aislamiento entre usuarios y ausencia de duplicados ante redelivery.

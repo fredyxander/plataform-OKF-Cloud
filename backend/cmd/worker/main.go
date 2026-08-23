@@ -71,6 +71,32 @@ func failJobToDLQ(
 	return nil
 }
 
+// recordInvalidBundle deja constancia en PostgreSQL de que la
+// validación rechazó el bundle. La fila se guarda sin published_at y
+// con is_valid = false, de modo que el bundle queda registrado como
+// evidencia de la validación pero nunca es descargable.
+func recordInvalidBundle(
+	db *database.DB,
+	job *domain.Job,
+	storageKey string,
+	conceptCount int,
+	validation domain.BundleValidation,
+) {
+	if _, err := db.CreateBundle(
+		job.ID,
+		job.OwnerID,
+		storageKey,
+		conceptCount,
+		validation,
+	); err != nil {
+		log.Printf(
+			"could not record invalid bundle for job %s: %v",
+			job.ID,
+			err,
+		)
+	}
+}
+
 func cleanupObjects(
 	ctx context.Context,
 	storage *storage.MinIO,
@@ -154,6 +180,16 @@ func main() {
 	}
 
 	log.Println("MinIO connected and bucket ready")
+
+	// Inyección de fallo para la sustentación. Desactivada salvo que
+	// se defina explícitamente OKF_FAULT_INJECTION.
+	bundleFault := os.Getenv("OKF_FAULT_INJECTION")
+	if bundleFault != "" {
+		log.Printf(
+			"WARNING: bundle fault injection enabled: %s",
+			bundleFault,
+		)
+	}
 
 	// 4. Nos suscribimos a la cola de trabajos.
 	messages, err := rabbitMQ.ConsumeJobs()
@@ -625,7 +661,7 @@ func main() {
 		// Esto nos permite detener la API y comprobar
 		// que el worker sigue trabajando independientemente.
 		// time.Sleep(10 * time.Second)
-		concepts, err := okf.Convert(
+		conversion, err := okf.Convert(
 			document.Filename,
 			document.Format,
 			content,
@@ -662,14 +698,10 @@ func main() {
 		log.Printf(
 			"document %s converted successfully: %d concepts",
 			document.ID,
-			len(concepts),
+			len(conversion.Concepts),
 		)
 
-		bundle, err := okf.BuildBundle(
-			document.Filename,
-			document.Format,
-			concepts,
-		)
+		bundle, err := okf.BuildBundle(conversion)
 		if err != nil {
 			errMsg := err.Error()
 
@@ -698,13 +730,40 @@ func main() {
 			continue
 		}
 
-		if err := okf.ValidateBundle(bundle); err != nil {
-			errMsg := err.Error()
+		if applied := okf.ApplyFault(bundle, bundleFault); applied != "" {
+			log.Printf(
+				"fault injection applied to bundle of job %s: %s",
+				persistedJob.ID,
+				applied,
+			)
+		}
+
+		bundlePrefix := fmt.Sprintf(
+			"bundles/%s/%s",
+			persistedJob.OwnerID,
+			persistedJob.ID,
+		)
+
+		// La validación ocurre antes de subir cualquier objeto: un
+		// bundle inválido no llega nunca al object storage.
+		validation := okf.ValidateBundle(bundle)
+
+		if !validation.IsPublishable() {
+			validationErr := validation.Err()
+			errMsg := validationErr.Error()
 
 			log.Printf(
 				"bundle validation failed for job %s: %v",
 				persistedJob.ID,
-				err,
+				validationErr,
+			)
+
+			recordInvalidBundle(
+				db,
+				persistedJob,
+				bundlePrefix,
+				bundle.ConceptCount,
+				validation,
 			)
 
 			if updateErr := db.UpdateJobStatus(
@@ -727,11 +786,24 @@ func main() {
 		}
 
 		log.Printf(
-			"bundle built and validated for job %s: %d files, %d concepts",
+			"bundle built and validated for job %s: %d files, %d concepts, validation=%s",
 			persistedJob.ID,
 			len(bundle.Files),
 			bundle.ConceptCount,
+			validation.Status,
 		)
+
+		for _, warning := range validation.Warnings {
+			log.Printf(
+				"bundle warning for job %s: %s",
+				persistedJob.ID,
+				warning,
+			)
+		}
+
+		// La trazabilidad de log.md se completa con el resultado de la
+		// validación antes de empaquetar el bundle.
+		okf.AppendValidationLog(bundle, validation)
 
 		bundleZIP, err := okf.PackageBundle(bundle)
 		if err != nil {
@@ -761,12 +833,6 @@ func main() {
 
 			continue
 		}
-
-		bundlePrefix := fmt.Sprintf(
-			"bundles/%s/%s",
-			persistedJob.OwnerID,
-			persistedJob.ID,
-		)
 
 		bundleUploadFailed := false
 
@@ -888,8 +954,8 @@ func main() {
 			persistedJob.ID,
 			persistedJob.OwnerID,
 			bundleZIPKey,
-			true,
 			bundle.ConceptCount,
+			validation,
 		)
 		if err != nil {
 			cleanupObjects(
@@ -925,9 +991,10 @@ func main() {
 		}
 
 		log.Printf(
-			"bundle metadata persisted: bundle_id=%s job_id=%s",
+			"bundle metadata persisted: bundle_id=%s job_id=%s validation=%s",
 			persistedBundle.ID,
 			persistedBundle.JobID,
+			persistedBundle.Validation.Status,
 		)
 
 		// Actualiza estado a completed en postgres

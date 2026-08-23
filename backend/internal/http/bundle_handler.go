@@ -48,8 +48,15 @@ func (h *BundleHandler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Un bundle rechazado por la validación queda registrado, pero su
+	// descarga nunca se habilita.
 	if !bundle.IsValid {
-		http.Error(w, "bundle is not valid", http.StatusConflict)
+		http.Error(
+			w,
+			"bundle was rejected by validation and is not available",
+			http.StatusConflict,
+		)
+
 		return
 	}
 

@@ -247,6 +247,10 @@ Do not commit `.env` files containing credentials.
 
 An `.env.example` file is provided to document the required configuration.
 
+`OKF_FAULT_INJECTION` is optional and only used to demonstrate the incomplete
+bundle case. Leave it empty for normal operation. See
+[Bundle validation and result classification](#bundle-validation-and-result-classification).
+
 ---
 
 ## Running the Application
@@ -415,11 +419,276 @@ bundle/
 └── assets/
 ```
 
-`index.md` provides ordered navigation through the generated concepts.
+`index.md` provides ordered navigation through the generated concepts, plus the
+bundle data (source file, format and concept count).
 
-`log.md` contains conversion and validation information.
+`log.md` records the conversion traceability: source, operations applied,
+detected units in order, and the validation result.
 
-A bundle must pass validation before it can be published for download. Before the frontend milestone, the validation result will be reviewed so it explicitly distinguishes `VALID`, `VALID_WITH_WARNINGS`, and `INVALID` when required by the project rubric.
+### Segmentation into logical units
+
+Markdown is segmented by the **highest heading level that actually divides the
+document**. H1 is tried first, then H2, then H3.
+
+| Document | Segmentation |
+| --- | --- |
+| `# A` / `# B` / `# C` | 3 units, split by H1 |
+| `# Title` + `## A` / `## B` | 3 units: the title block, then split by H2 |
+| `## A` / `## B` (no H1) | 2 units, split by H2 |
+| a single heading, or none | 1 unit, the whole document |
+
+This avoids the common case where H1 is the document title and every section is
+H2, which would otherwise yield a single unit.
+
+Additional rules:
+
+- headings inside fenced code blocks (``` or `~~~`) are **not** headings, so a
+  `# comment` inside a shell snippet never splits the document;
+- text before the first heading becomes its own unit, so no content is lost;
+- each unit keeps its own heading, so every concept document is self-contained
+  Markdown;
+- Windows line endings are normalized before segmenting;
+- section titles containing Markdown link syntax are sanitized for the index
+  label, so a title like `# See [the source](https://x.org)` cannot break index
+  link resolution;
+- plain text is always kept as a single unit: it has no detectable structure.
+
+Segmentation is deterministic: the same document always produces the same units
+in the same order.
+
+### Bundle validation and result classification
+
+Every bundle is validated **before** any object is written to MinIO. The
+validator does not stop at the first problem: it collects every finding in a
+single pass and classifies the result in the three levels required by the
+rubric.
+
+| Result | Meaning | Published | Downloadable |
+| --- | --- | --- | --- |
+| `valid` | Minimum structure complete, index links resolve, no observations. | yes | yes |
+| `valid_with_warnings` | Publishable, but the conversion left observations worth reporting. | yes | yes |
+| `invalid` | The minimum structure or the index links are broken. | no | no |
+
+Conditions that make a bundle **invalid**:
+
+- `index.md` missing or empty;
+- `log.md` missing;
+- no concepts at all;
+- a declared concept file missing from the bundle;
+- a concept that `index.md` does not link;
+- an `index.md` link that does not resolve to a file in the bundle;
+- duplicated or unnamed files.
+
+Conditions that only produce **warnings**:
+
+- a concept with no content;
+- an empty `log.md` (the conversion has no traceability);
+- an `index.md` link without a title;
+- a file present in the bundle that `index.md` does not reference.
+
+A short document without divisions produces exactly one concept and is
+classified as `valid` — a single unit never produces warnings.
+
+The classification is persisted with the bundle metadata and exposed by
+`GET /jobs/{id}`:
+
+```json
+{
+  "status": "completed",
+  "bundle": {
+    "concept_count": 3,
+    "is_valid": true,
+    "validation": { "status": "valid", "warnings": [], "errors": [] },
+    "download_url": "/jobs/{id}/bundle"
+  }
+}
+```
+
+A rejected bundle is still recorded in PostgreSQL as evidence of the
+validation, but it has no `published_at`, no objects in MinIO and no
+`download_url`. The Job ends as `failed` with the validation errors in
+`error_message`, and `GET /jobs/{id}/bundle` answers `409 Conflict`.
+
+#### Demonstrating an incomplete bundle
+
+The pipeline always generates the minimum structure, so the "incomplete
+bundle" condition of the rubric cannot occur on its own. A controlled fault
+injection exists for the demo only, disabled unless the worker receives
+`OKF_FAULT_INJECTION`:
+
+| Value | Effect | Expected classification |
+| --- | --- | --- |
+| *(empty)* | normal pipeline | — |
+| `drop-index` | removes `index.md` | `invalid` |
+| `drop-log` | removes `log.md` | `invalid` |
+| `empty-concept` | empties the first concept | `valid_with_warnings` |
+
+```bash
+OKF_FAULT_INJECTION=drop-index docker compose up -d worker
+# upload a document, then check GET /jobs/{id} and GET /jobs/{id}/bundle
+docker compose up -d worker   # back to the normal pipeline
+```
+
+---
+
+## Manual verification with curl
+
+End-to-end check of upload, processing and bundle download against the running
+stack. Test documents live in `docs/filesTest/` — see the table there for the
+expected result of each one.
+
+Run these in **Git Bash**. In Windows PowerShell `curl` is an alias of
+`Invoke-WebRequest`, so use `curl.exe` explicitly there.
+
+### 1. Start the stack
+
+```bash
+docker compose up -d --build
+curl -s http://localhost:8080/health
+```
+
+### 2. Register and get a token
+
+```bash
+EMAIL="demo-1@example.com"
+
+curl -s -X POST http://localhost:8080/auth/register \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"$EMAIL\",\"password\":\"password123\"}"
+
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"$EMAIL\",\"password\":\"password123\"}" \
+  | sed -E 's/.*"token":"([^"]+)".*/\1/')
+
+echo "${#TOKEN} characters"   # a JWT, ~250 characters
+```
+
+### 3. Upload a document
+
+The `type=` part is required: without it curl sends
+`application/octet-stream` and the API answers `415 Unsupported Media Type`.
+Only `text/plain` and `text/markdown` are accepted, up to 10 MB.
+
+```bash
+curl -s -X POST http://localhost:8080/documents \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@docs/filesTest/03-manual-tecnico.md;type=text/markdown"
+```
+
+The response is immediate — the conversion has not run yet:
+
+```json
+{ "document": { "...": "..." }, "jobId": "<uuid>", "status": "queued" }
+```
+Guardar el jobId
+
+### 4. Follow the job
+
+```bash
+JOB=<jobId from the previous response>
+
+curl -s http://localhost:8080/jobs/$JOB -H "Authorization: Bearer $TOKEN"
+```
+
+Expected for `03-manual-tecnico.md`: `"status": "completed"`,
+`"concept_count": 4`, `"validation": {"status": "valid", ...}` and a
+`download_url`.
+
+The full list is at `GET /jobs`:
+
+```bash
+curl -s http://localhost:8080/jobs -H "Authorization: Bearer $TOKEN"
+```
+
+### 5. Download and inspect the bundle
+
+```bash
+curl -s -o bundle.zip http://localhost:8080/jobs/$JOB/bundle \
+  -H "Authorization: Bearer $TOKEN"
+
+unzip -o bundle.zip -d bundle/
+cat bundle/index.md
+cat bundle/log.md
+cat bundle/concept-02.md
+```
+
+Check that `index.md` links every concept in the original order, that `log.md`
+lists the operations, the detected units and the validation result, and that
+the fenced code block inside `concept-02.md` arrived intact.
+
+### 6. Run every test document
+
+```bash
+for f in docs/filesTest/0*; do
+  case "$f" in *.txt) CT=text/plain;; *) CT=text/markdown;; esac
+  echo "--- $f"
+  curl -s -X POST http://localhost:8080/documents \
+    -H "Authorization: Bearer $TOKEN" \
+    -F "file=@$f;type=$CT"
+  echo
+done
+
+sleep 3
+curl -s http://localhost:8080/jobs -H "Authorization: Bearer $TOKEN"
+```
+
+Compare against the expected table in `docs/filesTest/README.md`.
+`06-seccion-vacia.md` is the only one that must come back as
+`valid_with_warnings`; it is still downloadable.
+
+### 7. Rejected bundle
+
+```bash
+OKF_FAULT_INJECTION=drop-index docker compose up -d worker
+
+curl -s -X POST http://localhost:8080/documents \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@docs/filesTest/02-estructurado.md;type=text/markdown"
+
+# with the new jobId:
+curl -s http://localhost:8080/jobs/$JOB -H "Authorization: Bearer $TOKEN"
+curl -s -o /dev/null -w "%{http_code}\n" \
+  http://localhost:8080/jobs/$JOB/bundle -H "Authorization: Bearer $TOKEN"
+
+docker compose up -d worker   # back to the normal pipeline
+```
+
+Expected: the Job ends `failed` with
+`bundle validation failed: bundle is missing index.md`, the bundle reports
+`"status": "invalid"` with no `download_url`, and the download answers `409`.
+Nothing is written to MinIO for that job.
+
+### 8. Owner isolation
+
+Register a second user, then ask for the first user's job with the second
+user's token:
+
+```bash
+EMAIL="demo-2@example.com"
+curl -s -X POST http://localhost:8080/auth/register   -H "Content-Type: application/json"   -d "{\"email\":\"$EMAIL\",\"password\":\"password123\"}"
+
+OTHER_TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"$EMAIL\",\"password\":\"password123\"}" \
+  | sed -E 's/.*"token":"([^"]+)".*/\1/')
+
+echo "${#OTHER_TOKEN} characters"   # a JWT, ~250 characters
+```
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" \
+  http://localhost:8080/jobs/$JOB -H "Authorization: Bearer $OTHER_TOKEN"
+```
+
+Download bundle with other user token, rejected with 404
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" \
+  http://localhost:8080/jobs/$JOB/bundle -H "Authorization: Bearer $OTHER_TOKEN"
+```
+
+Expected: `404`, not `403` — the server does not reveal that the resource
+exists. Without any token: `401`.
 
 ---
 
@@ -433,7 +702,7 @@ A bundle must pass validation before it can be published for download. Before th
 - Automatic Job creation from `POST /documents` and immediate `202 Accepted` response with `jobId`.
 - Asynchronous RabbitMQ processing with independent Go workers.
 - Job status tracking and authorized bundle download.
-- OKF conversion, segmentation, bundle generation and minimum bundle validation.
+- OKF conversion, segmentation, bundle generation and bundle validation classified as `valid` / `valid_with_warnings` / `invalid`.
 - Idempotent handling of duplicate/redelivered completed Jobs.
 - Atomic Job claiming to avoid concurrent processing of the same queued Job.
 - Recovery of stale `processing` Jobs.
@@ -442,8 +711,8 @@ A bundle must pass validation before it can be published for download. Before th
 
 ### Required backend/rubric checklist before frontend
 
-1. Review bundle validation classification and explicitly support `VALID / VALID_WITH_WARNINGS / INVALID` if the current representation does not distinguish them.
-2. Review bundle conversion with representative configurations: short document, structured multi-section document, ordered concepts/index links and reasonable edge cases.
+1. ~~Review bundle validation classification and explicitly support `VALID / VALID_WITH_WARNINGS / INVALID`.~~ **Done** — see [Bundle validation and result classification](#bundle-validation-and-result-classification).
+2. ~~Review bundle conversion with representative configurations.~~ **Done** — see [Segmentation into logical units](#segmentation-into-logical-units).
 3. Run and document the six verifiable conditions required by the project specification: effective asynchrony, short document, structured document, incomplete bundle rejection, multi-user isolation and duplicate-delivery idempotency.
 4. Verify that a clean environment can be configured and started using only this README, `.env.example`, and `docker compose up -d --build`.
 5. Demonstrate horizontal worker scaling with at least two workers while preserving `prefetch = 1`, atomic claiming and no duplicate final bundle.
@@ -532,7 +801,7 @@ The HTTP request does not execute the conversion. The API returns the created `j
 
 ### Pre-M8 backend and rubric closure ⏳
 
-- `VALID / VALID_WITH_WARNINGS / INVALID` review.
+- `VALID / VALID_WITH_WARNINGS / INVALID` classification ✅.
 - Advanced/representative conversion tests.
 - Six specification verification scenarios.
 - README reproducibility from a clean environment.
@@ -590,7 +859,11 @@ Bundle in MinIO + metadata in PostgreSQL
 COMPLETED / FAILED
 ```
 
-The next task is **backend/rubric closure**, starting with the bundle validation classification (`VALID / VALID_WITH_WARNINGS / INVALID`). The frontend starts only after the remaining backend checklist has been verified.
+**Backend/rubric closure is in progress.** The bundle validation
+classification (`VALID / VALID_WITH_WARNINGS / INVALID`) is implemented and
+verified end-to-end; the next task is reviewing the conversion with
+representative document configurations. The frontend starts only after the
+remaining backend checklist has been verified.
 
 ---
 

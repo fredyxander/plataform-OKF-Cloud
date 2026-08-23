@@ -40,12 +40,13 @@ type Job struct {
 }
 
 type Bundle struct {
-	ID           string     `json:"id"`
-	JobID        string     `json:"job_id"`
-	OwnerID      string     `json:"owner_id"`
-	StorageKey   string     `json:"storage_key"`
-	IsValid      bool       `json:"is_valid"`
-	ConceptCount int        `json:"concept_count"`
-	PublishedAt  *time.Time `json:"published_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
+	ID           string           `json:"id"`
+	JobID        string           `json:"job_id"`
+	OwnerID      string           `json:"owner_id"`
+	StorageKey   string           `json:"storage_key"`
+	IsValid      bool             `json:"is_valid"`
+	ConceptCount int              `json:"concept_count"`
+	Validation   BundleValidation `json:"validation"`
+	PublishedAt  *time.Time       `json:"published_at,omitempty"`
+	CreatedAt    time.Time        `json:"created_at"`
 }

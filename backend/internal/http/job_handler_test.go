@@ -17,6 +17,11 @@ func TestBuildJobDetailCompleted(t *testing.T) {
 		JobID:        "job-123",
 		IsValid:      true,
 		ConceptCount: 3,
+		Validation: domain.BundleValidation{
+			Status:   domain.BundleValid,
+			Warnings: []string{},
+			Errors:   []string{},
+		},
 	}
 
 	response := buildJobDetailResponse(job, bundle)
@@ -40,6 +45,114 @@ func TestBuildJobDetailCompleted(t *testing.T) {
 		t.Errorf(
 			"unexpected download URL: %s",
 			response.Bundle.DownloadURL,
+		)
+	}
+
+	if response.Bundle.Validation.Status != domain.BundleValid {
+		t.Errorf(
+			"unexpected validation status: %s",
+			response.Bundle.Validation.Status,
+		)
+	}
+}
+
+// Un bundle publicado con advertencias sigue siendo descargable y las
+// advertencias viajan en el detalle del Job.
+func TestBuildJobDetailCompletedWithWarnings(t *testing.T) {
+	job := &domain.Job{
+		ID:     "job-456",
+		Status: domain.JobStatusCompleted,
+	}
+
+	bundle := &domain.Bundle{
+		ID:           "bundle-456",
+		JobID:        "job-456",
+		IsValid:      true,
+		ConceptCount: 2,
+		Validation: domain.BundleValidation{
+			Status:   domain.BundleValidWithWarnings,
+			Warnings: []string{"concept concept-02.md has no content"},
+			Errors:   []string{},
+		},
+	}
+
+	response := buildJobDetailResponse(job, bundle)
+
+	if response.Bundle == nil {
+		t.Fatal("expected bundle for completed job")
+	}
+
+	if response.Bundle.Validation.Status != domain.BundleValidWithWarnings {
+		t.Errorf(
+			"expected %s, got %s",
+			domain.BundleValidWithWarnings,
+			response.Bundle.Validation.Status,
+		)
+	}
+
+	if len(response.Bundle.Validation.Warnings) != 1 {
+		t.Errorf(
+			"expected the warnings to be exposed, got %v",
+			response.Bundle.Validation.Warnings,
+		)
+	}
+
+	if response.Bundle.DownloadURL != "/jobs/job-456/bundle" {
+		t.Errorf(
+			"a bundle with warnings must remain downloadable, got %q",
+			response.Bundle.DownloadURL,
+		)
+	}
+}
+
+// Bundle incompleto: el Job falla, la clasificación queda visible y no
+// se ofrece ninguna URL de descarga.
+func TestBuildJobDetailInvalidBundleIsNotDownloadable(t *testing.T) {
+	errorMessage := "bundle validation failed: bundle is missing index.md"
+
+	job := &domain.Job{
+		ID:           "job-789",
+		Status:       domain.JobStatusFailed,
+		ErrorMessage: &errorMessage,
+	}
+
+	bundle := &domain.Bundle{
+		ID:           "bundle-789",
+		JobID:        "job-789",
+		IsValid:      false,
+		ConceptCount: 1,
+		Validation: domain.BundleValidation{
+			Status:   domain.BundleInvalid,
+			Warnings: []string{},
+			Errors:   []string{"bundle is missing index.md"},
+		},
+	}
+
+	response := buildJobDetailResponse(job, bundle)
+
+	if response.Bundle == nil {
+		t.Fatal("expected the rejected bundle to be reported")
+	}
+
+	if response.Bundle.Validation.Status != domain.BundleInvalid {
+		t.Errorf(
+			"expected %s, got %s",
+			domain.BundleInvalid,
+			response.Bundle.Validation.Status,
+		)
+	}
+
+	if response.Bundle.DownloadURL != "" {
+		t.Errorf(
+			"an invalid bundle must not expose a download URL, got %q",
+			response.Bundle.DownloadURL,
+		)
+	}
+
+	if len(response.Bundle.Validation.Errors) != 1 {
+		t.Errorf(
+			"expected the validation errors to be exposed, got %v",
+			response.Bundle.Validation.Errors,
 		)
 	}
 }
