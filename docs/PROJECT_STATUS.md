@@ -1852,6 +1852,15 @@ una lista de estados finales replicada en el cliente. La descarga se decide
 por la presencia de `download_url`, nunca por `is_valid`: son cosas distintas
 y solo la primera garantiza que haya algo que descargar.
 
+**Las secciones del panel también son rutas.** Al principio solo se
+enrutó el detalle y el panel siguió navegando por estado, con lo que
+«Volver a mis documentos» llevaba a `/app` y el panel aterrizaba siempre en
+«Subir documento»: el botón prometía una cosa y hacía otra. Ahora existen
+`/app/upload`, `/app/documentos` y `/app/perfil`, el panel toma la sección
+de la URL y una sección desconocida se corrige a `/app/upload` en lugar de
+mostrar algo distinto de lo que la URL dice. De paso el botón «atrás» del
+navegador funciona entre vistas, que es cómodo al grabar el video.
+
 **Cambio de contrato asociado:** `GET /jobs/{id}` ahora incluye `document`
 con `id`, `filename` y `format`, igual que ya hacía el listado. Sin él la
 vista de detalle solo podía mostrar un UUID. Si el documento no se puede
@@ -1918,6 +1927,45 @@ observables:
 
 Después se restauró el entorno por defecto: dos workers, sin retardo ni
 inyección de fallos.
+
+### Formato de entrada: detección y anuncio --- COMPLETADO Y VERIFICADO
+
+**El `.md` se rechazaba con 415 según el sistema operativo.** El navegador
+deduce el tipo de un archivo del registro del sistema, y Windows no tiene MIME
+registrado para `.md`: `file.type` llegaba vacío y el multipart viajaba como
+`application/octet-stream`. El backend decidía el formato solo por el
+Content-Type, así que respondía `415`. El `.txt` se salvaba por casualidad,
+porque ese sí está registrado. Era un tropiezo probable justo en el segmento 4
+del video, y dependía de la máquina de quien grabase.
+
+Corregido por los dos lados, que es lo que corresponde:
+
+-   `detectFormat(contentType, filename)` en el backend usa el Content-Type
+    cuando dice algo útil --- admitiendo parámetros como `; charset=utf-8` ---
+    y recurre a la extensión cuando llega vacío o como
+    `application/octet-stream`. Cualquier cliente funciona, `curl` incluido, sin
+    tener que declarar el tipo a mano.
+-   El frontend declara el tipo a partir de la extensión al construir el
+    `FormData`, en lugar de confiar en lo que el navegador haya deducido.
+
+Esto no relaja la validación: el contenido sigue siendo no confiable y el
+conversor valida lo que recibe. La detección solo elige el conversor. Una
+extensión no admitida sigue devolviendo `415`, ahora con un mensaje que dice
+cuáles se aceptan.
+
+**La landing anunciaba formatos inexistentes.** Decía "Sube tu Word (.docx) o
+PDF" y una etiqueta "Word y PDF", cuando el sistema solo acepta `.txt` y `.md`
+--- y el propio selector de archivos lo decía tres líneas más abajo. Es el tipo
+de contradicción que un evaluador ve en pantalla durante el segmento 4. Los
+textos ahora nombran Markdown y texto plano.
+
+Verificado contra el stack: `.md` sin tipo declarado responde `202` y se
+almacena como `markdown` (antes `415`); `.txt` sin tipo, `202` y `plaintext`;
+`.md` con tipo explícito sigue funcionando; un `.pdf` sigue devolviendo `415`.
+Con Chrome headless, una carga real desde la interfaz llega hasta "¡Bundle
+generado exitosamente!" con sus cuatro conceptos y su botón de descarga, y la
+landing ya no menciona Word ni PDF. Se añadió `TestDetectFormat` con diez
+casos.
 
 ### Cómo alcanza el frontend a la API
 

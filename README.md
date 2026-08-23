@@ -732,7 +732,7 @@ the authenticated owner.
 | `404` | The resource does not exist **or** belongs to another user. |
 | `409` | The bundle exists but validation rejected it. |
 | `413` | Upload above 10 MB. |
-| `415` | Content type other than `text/plain` or `text/markdown`. |
+| `415` | Neither the content type nor the file extension identifies a `.txt` or `.md` document. |
 
 `404` deliberately covers both "not found" and "not yours": the API does not
 reveal that a foreign resource exists.
@@ -877,9 +877,10 @@ curl -s ... -H "Authorization: Bearer $(cat .token)"
 
 ### 3. Upload a document
 
-The `type=` part is required: without it curl sends
-`application/octet-stream` and the API answers `415 Unsupported Media Type`.
-Only `text/plain` and `text/markdown` are accepted, up to 10 MB.
+Only `.txt` and `.md` are accepted, up to 10 MB. The `type=` below is
+explicit but optional: when the content type is missing or arrives as
+`application/octet-stream` — which is what browsers send for `.md` on systems
+with no MIME registered for it — the API falls back to the file extension.
 
 ```bash
 RESPONSE=$(curl -s -X POST http://localhost:8080/documents \

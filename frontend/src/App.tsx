@@ -31,6 +31,12 @@ function saveSession(session: Session | null) {
   } catch { /* la sesión dura lo que la pestaña */ }
 }
 
+// El backend acepta .md y .txt. Declarar el tipo aquí evita depender de
+// lo que el sistema operativo tenga registrado para cada extensión.
+function mimeForFile(filename: string) {
+  return /\.(md|markdown)$/i.test(filename) ? 'text/markdown' : 'text/plain'
+}
+
 async function downloadBundle(url: string, token: string, filename = 'bundle.zip') {
   const res = await fetch(`${API}${url}`, { headers: { Authorization: `Bearer ${token}` } })
   if (!res.ok) { alert('Error al descargar el bundle'); return }
@@ -206,7 +212,7 @@ function Landing({onGoAuth}:{onGoAuth:(m:'login'|'register')=>void}) {
           <span style={{color:'#6aac3e'}}>conocimiento</span>
         </h1>
         <p className="f3" style={{fontSize:'0.9rem',color:'#5a6645',lineHeight:1.72,marginBottom:'26px'}}>
-          Sube tu <strong style={{color:'#3d5220'}}>Word (.docx) o PDF</strong> y obtén un bundle OKF — conceptos extraídos, validados y listos para descargar. Procesamiento asíncrono en la nube.
+          Sube tu documento <strong style={{color:'#3d5220'}}>Markdown (.md) o texto plano (.txt)</strong> y obtén un bundle OKF — conceptos extraídos, validados y listos para descargar. Procesamiento asíncrono en la nube.
         </p>
         <div className="f4" style={{display:'flex',gap:'10px',flexWrap:'wrap',justifyContent:'center',marginBottom:'24px'}}>
           <button className="btn-g" onClick={()=>onGoAuth('register')} style={{padding:'12px 28px',background:'#6aac3e',color:'white',border:'none',borderRadius:'12px',fontSize:'0.95rem',fontWeight:700,cursor:'pointer',transition:'all .2s',boxShadow:'0 4px 14px rgba(106,172,62,.35)'}}>
@@ -217,7 +223,7 @@ function Landing({onGoAuth}:{onGoAuth:(m:'login'|'register')=>void}) {
           </button>
         </div>
         <div style={{display:'flex',gap:'8px',flexWrap:'wrap',justifyContent:'center'}}>
-          {[['📄','Word y PDF'],['⚡','Asíncrono'],['📦','Bundle OKF'],['🔒','Privado']].map(([ic,lb])=>(
+          {[['📄','Markdown y texto'],['⚡','Asíncrono'],['📦','Bundle OKF'],['🔒','Privado']].map(([ic,lb])=>(
             <div key={lb} className="pill" style={{display:'flex',alignItems:'center',gap:'6px',background:'white',border:'1.5px solid #e8f2d8',borderRadius:'10px',padding:'5px 11px',fontSize:'0.74rem',color:'#4a6030',fontWeight:500,transition:'all .2s',boxShadow:'0 2px 6px rgba(0,0,0,.04)'}}>
               {ic} {lb}
             </div>
@@ -370,15 +376,18 @@ function UploadSection({token,onJobCreated}:{token:string;onJobCreated:(j:Job)=>
   },[activeJob,pollJob,onJobCreated])
 
   const handleFile=(f:File)=>{
-    const ok=['text/plain','text/markdown','']
-    if(!ok.includes(f.type)&&!f.name.match(/\.(txt|md)$/i)){setError('Solo .txt o .md');return}
+    if(!f.name.match(/\.(txt|md|markdown)$/i)){setError('Solo .txt o .md');return}
     setFile(f);setError('');setPhase('selected')
   }
 
   const submit=async()=>{
     if(!file) return
     setPhase('uploading');setError('')
-    const fd=new FormData();fd.append('file',file)
+    // El navegador deduce el tipo del registro del sistema y para .md
+    // suele dejarlo vacío, lo que viaja como application/octet-stream.
+    // Se declara a partir de la extensión para no depender de eso.
+    const fd=new FormData()
+    fd.append('file',new Blob([file],{type:mimeForFile(file.name)}),file.name)
     try {
       const res=await fetch(`${API}/documents`,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:fd})
       const text2=await res.text()
@@ -414,7 +423,7 @@ function UploadSection({token,onJobCreated}:{token:string;onJobCreated:(j:Job)=>
           <input id="fi" type="file" accept=".txt,.md,text/plain,text/markdown" style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0];if(f)handleFile(f)}}/>
           {file?(
             <div>
-              <div style={{fontSize:'2.8rem',marginBottom:'8px'}}>{file.name.endsWith('.pdf')?'📕':'📘'}</div>
+              <div style={{fontSize:'2.8rem',marginBottom:'8px'}}>{/\.(md|markdown)$/i.test(file.name)?'📝':'📘'}</div>
               <div style={{fontWeight:700,color:'#2d3a1e',marginBottom:'4px'}}>{file.name}</div>
               <div style={{fontSize:'0.76rem',color:'#8aaa60',marginBottom:'10px'}}>{(file.size/1024/1024).toFixed(2)} MB</div>
               <span onClick={e=>{e.stopPropagation();reset()}} style={{fontSize:'0.76rem',color:'#a0b880',cursor:'pointer',textDecoration:'underline'}}>Cambiar archivo</span>
@@ -664,7 +673,7 @@ function JobDetailView({token,onExpired}:{token:string;onExpired:()=>void}) {
     <div style={{position:'relative',zIndex:1,minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:'32px 20px'}}>
       <style>{`@keyframes spinD{to{transform:rotate(360deg)}}`}</style>
       <div style={{width:'100%',maxWidth:'620px'}}>
-        <button onClick={()=>navigate('/app')} style={{background:'none',border:'none',color:'#7a9a50',cursor:'pointer',fontSize:'0.82rem',fontWeight:600,marginBottom:'14px',padding:0}}>← Volver a mis documentos</button>
+        <button onClick={()=>navigate('/app/documentos')} style={{background:'none',border:'none',color:'#7a9a50',cursor:'pointer',fontSize:'0.82rem',fontWeight:600,marginBottom:'14px',padding:0}}>← Volver a mis documentos</button>
         {children}
       </div>
     </div>
@@ -778,8 +787,13 @@ function JobDetailView({token,onExpired}:{token:string;onExpired:()=>void}) {
   )
 }
 
+const DASH_SECTIONS:DashSection[]=['upload','documentos','perfil']
+
 function Dashboard({user,token,onLogout}:{user:User;token:string;onLogout:()=>void}) {
-  const [section,setSection]=useState<DashSection>('upload')
+  const navigate=useNavigate()
+  const {section:raw}=useParams<{section:string}>()
+  const section=DASH_SECTIONS.find(s=>s===raw)
+  const setSection=(s:DashSection)=>navigate(`/app/${s}`)
   const [jobs,setJobs]=useState<Job[]>([])
 
   const loadJobs=useCallback(async()=>{
@@ -809,6 +823,8 @@ function Dashboard({user,token,onLogout}:{user:User;token:string;onLogout:()=>vo
     const exists=prev.find(j=>j.id===job.id)
     return exists?prev.map(j=>j.id===job.id?job:j):[job,...prev]
   })
+  if(!section) return <Navigate to="/app/upload" replace/>
+
   return (
     <div style={{position:'relative',zIndex:1,minHeight:'100vh',display:'flex'}}>
       <Sidebar section={section} setSection={setSection} user={user} onLogout={onLogout}/>
@@ -844,7 +860,8 @@ function AppRoutes() {
       <Route path="/auth" element={session
         ? <Navigate to="/app" replace/>
         : <AuthView initialMode={params.get('mode')==='register'?'register':'login'} onLogin={handleLogin} onBack={()=>navigate('/')}/>}/>
-      <Route path="/app" element={session
+      <Route path="/app" element={<Navigate to="/app/upload" replace/>}/>
+      <Route path="/app/:section" element={session
         ? <Dashboard user={session.user} token={session.token} onLogout={handleLogout}/>
         : <Navigate to="/auth" replace/>}/>
       <Route path="/jobs/:id" element={session
