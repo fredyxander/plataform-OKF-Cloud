@@ -10,14 +10,14 @@ import (
 )
 
 var (
-	ErrEmailRequired     = errors.New("email is required")
-	ErrPasswordTooShort  = errors.New("password must contain at least 8 characters")
+	ErrEmailRequired      = errors.New("email is required")
+	ErrPasswordTooShort   = errors.New("password must contain at least 8 characters")
 	ErrEmailAlreadyExists = errors.New("email already exists")
-	ErrInvalidCredentials  = errors.New("invalid credentials")
+	ErrInvalidCredentials = errors.New("invalid credentials")
 )
 
 type UserRepository interface {
-	CreateUser(email, passwordHash string) (*domain.User, error)
+	CreateUser(email, passwordHash, nombre, apellido string) (*domain.User, error)
 	GetUserByEmail(email string) (*domain.User, error)
 }
 
@@ -41,31 +41,25 @@ func NewAuthService(
 	}
 }
 
-func (s *AuthService) Register(email, password string) (*domain.User, error) {
+func (s *AuthService) Register(email, password, nombre, apellido string) (*domain.User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-
 	if email == "" {
 		return nil, ErrEmailRequired
 	}
-
 	if len(password) < 8 {
 		return nil, ErrPasswordTooShort
 	}
-
 	passwordHash, err := auth.HashPassword(password)
 	if err != nil {
 		return nil, err
 	}
-
-	user, err := s.users.CreateUser(email, passwordHash)
+	user, err := s.users.CreateUser(email, passwordHash, nombre, apellido)
 	if err != nil {
 		if errors.Is(err, database.ErrAlreadyExists) {
 			return nil, ErrEmailAlreadyExists
 		}
-
 		return nil, err
 	}
-
 	return user, nil
 }
 
@@ -74,25 +68,20 @@ func (s *AuthService) Login(
 	password string,
 ) (*LoginResult, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-
 	user, err := s.users.GetUserByEmail(email)
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) {
 			return nil, ErrInvalidCredentials
 		}
-
 		return nil, err
 	}
-
 	if !auth.CheckPassword(password, user.PasswordHash) {
 		return nil, ErrInvalidCredentials
 	}
-
 	token, err := s.tokens.Generate(user.ID)
 	if err != nil {
 		return nil, err
 	}
-
 	return &LoginResult{
 		User:  user,
 		Token: token,
