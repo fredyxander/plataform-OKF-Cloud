@@ -1764,6 +1764,23 @@ bundle publicado con su clasificación y la lista vacía no nula.
 Con esto los seis puntos del checklist previo a M8 quedan completados y
 verificados. El backend está cerrado contra la rúbrica.
 
+### 8.8 Nombre y apellido en el registro --- COMPLETADO Y VERIFICADO
+
+El formulario de registro del frontend pide nombre y apellido, así que
+`users` los almacena (migración `003_user_names.sql`) y viajan en la
+respuesta de `/auth/register` y en el `user` de `/auth/login`.
+
+Son **opcionales**: el enunciado solo exige credenciales, de modo que un
+registro sin ellos responde `201` y los guarda como cadena vacía, no como
+`NULL`. La columna es `NOT NULL DEFAULT ''`, lo que evita que el frontend
+tenga que distinguir entre "vacío" y "ausente". `Register` los recorta
+igual que al email, porque llegan de un formulario.
+
+Verificado contra el stack real: registro con `"  Pepe  "` devuelve
+`"Pepe"`, el login lo repite, y un registro sin los campos responde `201`.
+
+
+
 ## Milestone 8 --- Frontend funcional
 
 **PENDIENTE.** El backend y su checklist están cerrados; los contratos que debe
@@ -1804,6 +1821,31 @@ respuesta en descarga.
 seguimiento del estado, no notificaciones, y refrescar `GET /jobs` ya lo
 cubre. Añadir un canal push supondría un segundo mecanismo que construir,
 demostrar y mantener sin crédito adicional.
+
+### Cómo alcanza el frontend a la API
+
+El frontend llamaba a rutas relativas (`/auth/register`) confiando en el
+proxy de `vite.config.ts`. Eso solo existe en `npm run dev`: en el
+contenedor los estáticos los sirve nginx sin configuración de proxy, así
+que la llamada moría en su propio 404 y la SPA mostraba el HTML de error
+de nginx dentro del formulario.
+
+Se resolvió sirviendo la API bajo el mismo origen con el prefijo `/api`:
+
+-   `frontend/nginx.conf` --- nuevo --- redirige `/api/` a `http://api:8080/`
+    y devuelve `index.html` para el resto de rutas;
+-   `vite.config.ts` usa el mismo prefijo, de modo que desarrollo y
+    contenedor resuelven URLs idénticas;
+-   `App.tsx` pasa de `const API = ''` a `const API = '/api'`.
+
+El prefijo no es cosmético. Un proxy directo sobre `/jobs` haría que abrir
+`/jobs/:id` en el navegador devolviera JSON en lugar de la aplicación, y
+esa ruta tiene que ser navegable para el segmento 6 del video. Al ser mismo
+origen tampoco hace falta CORS en el backend.
+
+Verificado por el puerto 5173: registro, login, subida multipart, consulta
+del Job y descarga del ZIP (`200 application/zip`, 6 archivos), y
+`GET /jobs/algun-id` devolviendo `200 text/html`.
 
 ## Milestone 9 --- Entrega, sustentación y cierre
 

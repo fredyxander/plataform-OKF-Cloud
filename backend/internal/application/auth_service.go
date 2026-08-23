@@ -41,6 +41,9 @@ func NewAuthService(
 	}
 }
 
+// Register da de alta un usuario. `nombre` y `apellido` son opcionales:
+// el enunciado solo exige credenciales, así que un registro sin ellos es
+// válido y se almacena como cadena vacía, no como NULL.
 func (s *AuthService) Register(email, password, nombre, apellido string) (*domain.User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" {
@@ -49,6 +52,9 @@ func (s *AuthService) Register(email, password, nombre, apellido string) (*domai
 	if len(password) < 8 {
 		return nil, ErrPasswordTooShort
 	}
+
+	nombre = strings.TrimSpace(nombre)
+	apellido = strings.TrimSpace(apellido)
 	passwordHash, err := auth.HashPassword(password)
 	if err != nil {
 		return nil, err

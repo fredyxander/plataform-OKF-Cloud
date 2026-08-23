@@ -17,6 +17,8 @@ func TestBundleRepository(t *testing.T) {
 	user, err := db.CreateUser(
 		fmt.Sprintf("bundle-test-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -104,6 +106,8 @@ func TestBundleRepository(t *testing.T) {
 	otherUser, err := db.CreateUser(
 		fmt.Sprintf("bundle-other-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create second user: %v", err)
@@ -155,6 +159,8 @@ func TestCreateInvalidBundleIsNotPublished(t *testing.T) {
 	user, err := db.CreateUser(
 		fmt.Sprintf("bundle-invalid-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create user: %v", err)

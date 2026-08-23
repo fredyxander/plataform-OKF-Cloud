@@ -15,6 +15,8 @@ func TestJobStatsByOwner(t *testing.T) {
 	user, err := db.CreateUser(
 		fmt.Sprintf("stats-test-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -98,6 +100,8 @@ func TestJobStatsByOwner(t *testing.T) {
 	otherUser, err := db.CreateUser(
 		fmt.Sprintf("stats-other-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create second user: %v", err)

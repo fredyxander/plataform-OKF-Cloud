@@ -15,7 +15,7 @@ func TestCreateAndGetDocument(t *testing.T) {
 	// tiene una FK hacia users.id.
 	email := fmt.Sprintf("document-test-%d@example.com", time.Now().UnixNano())
 
-	user, err := db.CreateUser(email, "fake-hash-for-test")
+	user, err := db.CreateUser(email, "fake-hash-for-test", "", "")
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -55,6 +55,8 @@ func TestCreateAndGetDocument(t *testing.T) {
 	otherUser, err := db.CreateUser(
 		fmt.Sprintf("other-user-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create second user: %v", err)

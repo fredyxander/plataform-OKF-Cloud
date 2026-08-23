@@ -6,6 +6,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/fredyxander/okf-platform/backend/internal/domain"
 )
 
 func TestCreateAndGetUser(t *testing.T) {
@@ -26,7 +28,7 @@ func TestCreateAndGetUser(t *testing.T) {
 	)
 	passwordHash := "fake-hash-for-test"
 
-	user, err := db.CreateUser(email, passwordHash)
+	user, err := db.CreateUser(email, passwordHash, "Pepe", "PErez")
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -47,6 +49,23 @@ func TestCreateAndGetUser(t *testing.T) {
 	if found.Email != email {
 		t.Fatalf("expected email %s, got %s", email, found.Email)
 	}
+
+	// Nombre y apellido se leen por las dos rutas, porque cada una
+	// tiene su propio SELECT y su propio orden de columnas.
+	byID, err := db.GetUserByID(user.ID)
+	if err != nil {
+		t.Fatalf("get user by id: %v", err)
+	}
+
+	for _, u := range []*domain.User{user, found, byID} {
+		if u.Nombre != "Pepe" || u.Apellido != "PErez" {
+			t.Fatalf(
+				"expected name Pepe PErez, got %q %q",
+				u.Nombre,
+				u.Apellido,
+			)
+		}
+	}
 }
 
 func TestCreateUserDuplicateEmail(t *testing.T) {
@@ -66,12 +85,12 @@ func TestCreateUserDuplicateEmail(t *testing.T) {
 		time.Now().UnixNano(),
 	)
 
-	_, err = db.CreateUser(email, "fake-hash-1")
+	_, err = db.CreateUser(email, "fake-hash-1", "", "")
 	if err != nil {
 		t.Fatalf("create first user: %v", err)
 	}
 
-	_, err = db.CreateUser(email, "fake-hash-2")
+	_, err = db.CreateUser(email, "fake-hash-2", "", "")
 
 	if !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf(

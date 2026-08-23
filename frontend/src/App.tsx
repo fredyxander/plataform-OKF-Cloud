@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 
-const API = ''
+// Prefijo del backend. Lo resuelve el proxy: vite.config.ts en desarrollo
+// y frontend/nginx.conf en el contenedor. Nunca se llama al puerto 8080
+// directamente, así se evita CORS.
+const API = '/api'
 
 async function downloadBundle(url: string, token: string, filename = 'bundle.zip') {
   const res = await fetch(`${API}${url}`, { headers: { Authorization: `Bearer ${token}` } })

@@ -89,6 +89,8 @@ func TestDocumentServiceCreateDocument(t *testing.T) {
 	user, err := db.CreateUser(
 		fmt.Sprintf("document-service-%d@example.com", time.Now().UnixNano()),
 		"fake-hash",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create user: %v", err)

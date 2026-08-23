@@ -594,8 +594,8 @@ owner: a resource belonging to somebody else answers `404`, never `403`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/auth/register` | Create a user. |
-| `POST` | `/auth/login` | Exchange credentials for a JWT valid for 24 h. |
+| `POST` | `/auth/register` | Create a user. Body: `email` and `password` (8 chars minimum), plus the optional `nombre` and `apellido`. |
+| `POST` | `/auth/login` | Exchange credentials for a JWT valid for 24 h. Returns `token` and the `user` object, including `nombre` and `apellido`. |
 | `POST` | `/documents` | Upload a document and start processing. Returns `202` immediately. |
 | `GET` | `/documents/{id}/download` | Retrieve the original document. |
 | `GET` | `/jobs` | List every job of the user. The general Jobs view. |
@@ -603,6 +603,13 @@ owner: a resource belonging to somebody else answers `404`, never `403`.
 | `GET` | `/jobs/{id}/bundle` | Download the bundle as a ZIP. |
 | `GET` | `/stats` | Job counts by status, for a dashboard header. |
 | `GET` | `/health` | Liveness, unauthenticated. |
+
+The paths above are the API's own. From the browser the SPA reaches them
+under the `/api` prefix (`/api/auth/login`), which a proxy strips before
+forwarding: `vite.config.ts` in development, `frontend/nginx.conf` in the
+container. Same origin, so no CORS is involved, and `/jobs/:id` stays free
+as an application route. `download_url` comes back without the prefix, so
+the frontend prepends it like any other path.
 
 ### Job states
 
@@ -741,7 +748,7 @@ presentation video has to show. Nothing else is expected.
 
 | Screen | Consumes | Must show |
 | --- | --- | --- |
-| Register / login | `POST /auth/register`, `POST /auth/login` | Stores the JWT and sends it on every later request. |
+| Register / login | `POST /auth/register`, `POST /auth/login` | Stores the JWT and sends it on every later request. The registration form may collect `nombre` and `apellido`; both are optional and the backend accepts a registration without them. |
 | Upload | `POST /documents` | The returned `jobId` and `queued` status, immediately. The video has to show that the upload does not wait for the conversion. |
 | Jobs list | `GET /jobs` | One row per job: document filename, status, and a download action when `bundle.download_url` is present. Reachable by normal navigation, refreshed every few seconds. |
 | Job detail | `GET /jobs/{id}` | Status, validation result, and the download. Must be a real route with the id in the URL. |

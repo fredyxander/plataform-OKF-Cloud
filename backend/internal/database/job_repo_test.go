@@ -17,6 +17,8 @@ func TestJobRepository(t *testing.T) {
 	user, err := db.CreateUser(
 		fmt.Sprintf("job-test-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -181,6 +183,8 @@ func TestJobRepository(t *testing.T) {
 	otherUser, err := db.CreateUser(
 		fmt.Sprintf("job-other-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create second user: %v", err)
@@ -215,6 +219,8 @@ func TestClaimJobForProcessingOnlyOnce(t *testing.T) {
 	user, err := db.CreateUser(
 		fmt.Sprintf("claim-job-test-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -303,6 +309,8 @@ func TestClaimJobForProcessingRecoversStaleJob(t *testing.T) {
 	user, err := db.CreateUser(
 		fmt.Sprintf("stale-job-test-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -390,6 +398,8 @@ func TestRequeueJobFromProcessing(t *testing.T) {
 	user, err := db.CreateUser(
 		fmt.Sprintf("requeue-job-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -464,6 +474,8 @@ func TestRequeueJobRejectsNonProcessingJob(t *testing.T) {
 	user, err := db.CreateUser(
 		fmt.Sprintf("requeue-reject-%d@example.com", time.Now().UnixNano()),
 		"fake-hash-for-test",
+		"",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create user: %v", err)

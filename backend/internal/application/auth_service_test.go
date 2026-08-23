@@ -13,12 +13,16 @@ import (
 type fakeUserRepository struct {
 	email        string
 	passwordHash string
+	nombre       string
+	apellido     string
 	err          error
 }
 
 func (f *fakeUserRepository) CreateUser(
 	email,
-	passwordHash string,
+	passwordHash,
+	nombre,
+	apellido string,
 ) (*domain.User, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -26,11 +30,15 @@ func (f *fakeUserRepository) CreateUser(
 
 	f.email = email
 	f.passwordHash = passwordHash
+	f.nombre = nombre
+	f.apellido = apellido
 
 	return &domain.User{
 		ID:           "user-123",
 		Email:        email,
 		PasswordHash: passwordHash,
+		Nombre:       nombre,
+		Apellido:     apellido,
 	}, nil
 }
 
@@ -63,6 +71,8 @@ func TestRegisterUser(t *testing.T) {
 	user, err := service.Register(
 		"  TEST@Example.com ",
 		password,
+		"  Pepe  ",
+		"  Perez  ",
 	)
 	if err != nil {
 		t.Fatalf("register user: %v", err)
@@ -70,6 +80,16 @@ func TestRegisterUser(t *testing.T) {
 
 	if user.Email != "test@example.com" {
 		t.Fatalf("unexpected email: %s", user.Email)
+	}
+
+	// El nombre llega desde un formulario, así que se normaliza igual
+	// que el email antes de persistirlo.
+	if user.Nombre != "Pepe" || user.Apellido != "Perez" {
+		t.Fatalf(
+			"expected trimmed name, got %q %q",
+			user.Nombre,
+			user.Apellido,
+		)
 	}
 
 	if repo.passwordHash == password {
@@ -94,6 +114,8 @@ func TestRegisterDuplicateEmail(t *testing.T) {
 	_, err := service.Register(
 		"test@example.com",
 		"secure-password-123",
+		"Pepe",
+		"Perez",
 	)
 
 	if !errors.Is(err, ErrEmailAlreadyExists) {
@@ -115,12 +137,43 @@ func TestRegisterWithoutEmail(t *testing.T) {
 	_, err := service.Register(
 		"   ",
 		"secure-password-123",
+		"Pepe",
+		"Perez",
 	)
 
 	if !errors.Is(err, ErrEmailRequired) {
 		t.Fatalf(
 			"expected ErrEmailRequired, got %v",
 			err,
+		)
+	}
+}
+
+// El enunciado solo exige credenciales: nombre y apellido son datos de
+// perfil y su ausencia no puede impedir el registro.
+func TestRegisterWithoutNameIsAllowed(t *testing.T) {
+	repo := &fakeUserRepository{}
+	tokens := auth.NewTokenManager(
+		"test-secret",
+		time.Hour,
+	)
+	service := NewAuthService(repo, tokens)
+
+	user, err := service.Register(
+		"test@example.com",
+		"secure-password-123",
+		"",
+		"   ",
+	)
+	if err != nil {
+		t.Fatalf("register user without name: %v", err)
+	}
+
+	if user.Nombre != "" || user.Apellido != "" {
+		t.Fatalf(
+			"expected empty name, got %q %q",
+			user.Nombre,
+			user.Apellido,
 		)
 	}
 }
@@ -136,6 +189,8 @@ func TestRegisterWithShortPassword(t *testing.T) {
 	_, err := service.Register(
 		"test@example.com",
 		"1234567",
+		"Pepe",
+		"Perez",
 	)
 
 	if !errors.Is(err, ErrPasswordTooShort) {
