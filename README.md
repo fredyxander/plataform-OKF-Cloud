@@ -792,10 +792,18 @@ containing the word `unauthorized`.
 Request it with `fetch` carrying the token, turn the response into a blob and
 trigger the download from there.
 
-### Optional
+### Flow metrics
 
-`GET /stats` gives job counts by status for a header. It is a bonus, not a
-requirement.
+`GET /stats` gives job counts by status. The dashboard renders them as a strip
+above every section, refreshed together with the jobs list in a single
+`Promise.all` so both reflect the same instant. Counts come from a `GROUP BY`
+over all of the owner's jobs, not from the page the client happens to hold.
+
+Worth knowing when filming: with five simultaneous uploads and two workers the
+strip settles on `queued=3, processing=2` — two in flight, one per worker at
+`prefetch = 1`, three waiting. It shows the queue and worker scaling on screen
+without opening the RabbitMQ console. Two uploads are not enough; both get
+claimed immediately.
 
 ---
 

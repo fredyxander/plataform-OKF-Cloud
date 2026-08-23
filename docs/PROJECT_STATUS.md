@@ -1967,6 +1967,65 @@ generado exitosamente!" con sus cuatro conceptos y su botón de descarga, y la
 landing ya no menciona Word ni PDF. Se añadió `TestDetectFormat` con diez
 casos.
 
+### Evidencia de asincronía en la interfaz --- COMPLETADO Y VERIFICADO
+
+El segmento 5 del video exige mostrar que la carga responde de inmediato con
+el identificador y que el trabajo prosigue por su cuenta. La API cumplía
+--- `202` con `jobId` y `queued` sin esperar a la conversión --- pero la
+interfaz no lo enseñaba: tras pulsar «Convertir» aparecía una animación de
+progreso sin identificador ni estado, y la pantalla quedaba ocupada hasta que
+el trabajo terminaba, de modo que no se podía subir otro documento. La
+asincronía era real y no se veía, que para la rúbrica es lo mismo que no
+tenerla.
+
+Ahora la pantalla de proceso muestra el identificador y el estado devueltos
+por la API en cuanto responde, con el aviso de que se puede cerrar la
+pantalla, y ofrece «Subir otro documento» sin esperar. El trabajo entra en la
+lista en el momento de la carga, no al terminar, así que sigue visible y el
+refresco del panel lo lleva hasta su desenlace.
+
+**Defecto encontrado al hacerlo:** `handleJobCreated` se recreaba en cada
+render del panel y estaba entre las dependencias del intervalo de la pantalla
+de subida. Como el panel ahora re-renderiza cada 3 s al refrescar la lista,
+ese intervalo se destruía y recreaba antes de llegar a dispararse. Está
+memorizado con `useCallback`, con el porqué anotado junto a la definición.
+
+Verificado con Chrome headless y `OKF_PROCESSING_DELAY=20s`: el identificador
+y el estado `⏳ En cola` aparecen a los **133 ms** de pulsar «Convertir»; un
+segundo documento se carga sin esperar al primero y muestra el suyo a los
+**75 ms**; ambos conviven en la lista como `⚙️ Procesando` y llegan solos a
+`✅ Completado` con su recuento de conceptos y su botón de descarga. Sin
+errores de página. Entorno restaurado después.
+
+### Métricas del flujo en la interfaz --- COMPLETADO Y VERIFICADO
+
+Cubre el alcance opcional «métricas y observabilidad básica del flujo de
+trabajos» del enunciado. `GET /stats` ya existía y estaba probado, pero
+ningún cliente lo consumía: la funcionalidad no se podía enseñar.
+
+El panel muestra ahora una barra con los cinco contadores --- en cola,
+procesando, completados, fallidos y total --- visible en las tres secciones y
+refrescada con la misma cadencia que la lista. Lista y métricas se piden en
+un solo `Promise.all` para que lo que aparece en pantalla corresponda al
+mismo instante; el recuento lo hace PostgreSQL con un `GROUP BY` sobre todos
+los trabajos del propietario, no el cliente sobre la página que tenga
+cargada.
+
+Los contadores en cero se dibujan igual que los demás, para que un cero se
+distinga de un dato ausente.
+
+Verificado con Chrome headless y `OKF_PROCESSING_DELAY=15s`: dos cargas
+seguidas llevan la barra a `Procesando=2` y luego a `Completados=3`, los
+mismos valores que devuelve `GET /stats` en ese momento, y la barra aparece
+en `/app/upload`, `/app/documentos` y `/app/perfil`.
+
+**Efecto secundario aprovechable en el video.** Con cinco cargas simultáneas
+y dos workers, la barra queda en `queued=3, processing=2`: exactamente dos en
+vuelo, uno por worker con `prefetch = 1`, y tres esperando en la cola. Es la
+forma más directa de enseñar en pantalla que la cola existe y que los workers
+escalan, sin abrir la consola de RabbitMQ. Con dos cargas no se aprecia,
+porque ambas se toman de inmediato.
+
 ### Cómo alcanza el frontend a la API
 
 El frontend llamaba a rutas relativas (`/auth/register`) confiando en el

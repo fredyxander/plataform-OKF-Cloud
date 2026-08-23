@@ -83,6 +83,9 @@ type JobDetail = {
   document: DocumentSummary
   bundle?: Bundle | null
 }
+// Lo que devuelve GET /stats: el recuento lo hace el servidor sobre todos
+// los trabajos del usuario, no sobre la página que el cliente tenga cargada.
+type JobStats = { queued: number; processing: number; completed: number; failed: number; total: number }
 type UploadPhase = 'idle'|'selected'|'uploading'|'processing'|'done'|'failed'
 type DashSection = 'upload'|'documentos'|'perfil'
 
@@ -404,6 +407,7 @@ function UploadSection({token,onJobCreated}:{token:string;onJobCreated:(j:Job)=>
         created_at:new Date().toISOString(),
         updated_at:new Date().toISOString(),
       }
+      onJobCreated(job)
       setActiveJob(job);setPhase('processing')
     } catch(e:any){setError(e.message);setPhase('selected')}
   }
@@ -462,10 +466,20 @@ function UploadSection({token,onJobCreated}:{token:string;onJobCreated:(j:Job)=>
   if(phase==='processing'&&activeJob) return (
     <div style={{...card,padding:'36px 28px'}}>
       <style>{`@keyframes stepPop{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}} @keyframes dotP{0%,100%{opacity:.3}50%{opacity:1}}`}</style>
-      <div style={{textAlign:'center',marginBottom:'28px'}}>
+      <div style={{textAlign:'center',marginBottom:'20px'}}>
         <div style={{fontSize:'2.5rem',marginBottom:'10px'}}>⚙️</div>
-        <div style={{fontWeight:800,color:'#2d3a1e',fontSize:'1.1rem',marginBottom:'4px'}}>Procesando tu documento</div>
+        <div style={{fontWeight:800,color:'#2d3a1e',fontSize:'1.1rem',marginBottom:'4px'}}>Documento recibido</div>
         <div style={{fontSize:'0.8rem',color:'#8aaa60'}}>{file?.name}</div>
+      </div>
+      <div style={{background:'#f5faea',border:'1.5px solid #d8f0b8',borderRadius:'12px',padding:'14px 16px',marginBottom:'18px'}}>
+        <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px',flexWrap:'wrap'}}>
+          <span style={{fontSize:'0.68rem',fontWeight:700,color:'#6aac3e',letterSpacing:'0.08em',textTransform:'uppercase'}}>Identificador del trabajo</span>
+          <span style={{padding:'2px 9px',borderRadius:'20px',fontSize:'0.68rem',fontWeight:700,background:STATUS_INFO[activeJob.status].bg,color:STATUS_INFO[activeJob.status].color,border:`1px solid ${STATUS_INFO[activeJob.status].border}`}}>{STATUS_INFO[activeJob.status].label}</span>
+        </div>
+        <div style={{fontFamily:'monospace',fontSize:'0.76rem',color:'#3d5220',wordBreak:'break-all',marginBottom:'8px'}}>{activeJob.id}</div>
+        <div style={{fontSize:'0.73rem',color:'#7a9a60',lineHeight:1.55}}>
+          Tu documento se esta procesando. Puedes cerrar esta pantalla o subir otro documento.
+        </div>
       </div>
       <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
         {[{ic:'✅',lb:'Documento recibido',done:true},{ic:activeJob.status==='processing'?'⚙️':'⏳',lb:'Extrayendo conceptos y generando bundle',done:activeJob.status==='processing'},{ic:'📦',lb:'Bundle OKF listo para descargar',done:false}].map((step,i)=>(
@@ -481,6 +495,9 @@ function UploadSection({token,onJobCreated}:{token:string;onJobCreated:(j:Job)=>
           URL aunque se cierre esta pantalla. */}
       <button onClick={()=>navigate(`/jobs/${activeJob.id}`)} style={{width:'100%',marginTop:'14px',padding:'10px',background:'transparent',color:'#6aac3e',border:'1.5px solid #b8d98a',borderRadius:'12px',fontSize:'0.84rem',fontWeight:600,cursor:'pointer'}}>
         Seguirlo en su propia página →
+      </button>
+      <button onClick={reset} style={{width:'100%',marginTop:'8px',padding:'10px',background:'#6aac3e',color:'white',border:'none',borderRadius:'12px',fontSize:'0.86rem',fontWeight:700,cursor:'pointer',boxShadow:'0 4px 14px rgba(106,172,62,.3)'}}>
+        Subir otro documento
       </button>
     </div>
   )
@@ -789,46 +806,95 @@ function JobDetailView({token,onExpired}:{token:string;onExpired:()=>void}) {
 
 const DASH_SECTIONS:DashSection[]=['upload','documentos','perfil']
 
+// Observabilidad básica del flujo: cuántos trabajos hay en cada estado.
+// Se dibuja siempre, incluso en cero, para que un contador vacío se
+// distinga de un contador ausente.
+function MetricsBar({stats}:{stats:JobStats|null}) {
+  const cells:[string,number,string,string][] = stats
+    ? [
+        ['En cola',     stats.queued,     STATUS_INFO.queued.color,     STATUS_INFO.queued.bg],
+        ['Procesando',  stats.processing, STATUS_INFO.processing.color, STATUS_INFO.processing.bg],
+        ['Completados', stats.completed,  STATUS_INFO.completed.color,  STATUS_INFO.completed.bg],
+        ['Fallidos',    stats.failed,     STATUS_INFO.failed.color,     STATUS_INFO.failed.bg],
+        ['Total',       stats.total,      '#3d5220',                    '#f5faea'],
+      ]
+    : []
+
+  return (
+    <div style={{marginBottom:'20px'}}>
+      <div style={{fontSize:'0.7rem',fontWeight:700,color:'#6aac3e',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:'10px'}}>
+        Métricas del flujo
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:'8px'}}>
+        {cells.length===0
+          ? <div style={{gridColumn:'1 / -1',fontSize:'0.76rem',color:'#a0b880'}}>Cargando métricas...</div>
+          : cells.map(([label,value,color,bg])=>(
+            <div key={label} style={{textAlign:'center',padding:'10px 4px',background:bg,borderRadius:'10px',border:'1px solid rgba(200,230,160,.7)'}}>
+              <div style={{fontSize:'1.3rem',fontWeight:800,color}}>{value}</div>
+              <div style={{fontSize:'0.64rem',color:'#7a9a60',marginTop:'2px'}}>{label}</div>
+            </div>
+          ))}
+      </div>
+    </div>
+  )
+}
+
 function Dashboard({user,token,onLogout}:{user:User;token:string;onLogout:()=>void}) {
   const navigate=useNavigate()
   const {section:raw}=useParams<{section:string}>()
   const section=DASH_SECTIONS.find(s=>s===raw)
   const setSection=(s:DashSection)=>navigate(`/app/${s}`)
   const [jobs,setJobs]=useState<Job[]>([])
+  const [stats,setStats]=useState<JobStats|null>(null)
 
-  const loadJobs=useCallback(async()=>{
+  // Lista y métricas se piden juntas para que lo que se ve en pantalla
+  // corresponda al mismo instante.
+  const refresh=useCallback(async()=>{
     try {
-      const res=await fetch(`${API}/jobs`,{headers:{Authorization:`Bearer ${token}`}})
+      const [jobsRes,statsRes]=await Promise.all([
+        fetch(`${API}/jobs`,{headers:{Authorization:`Bearer ${token}`}}),
+        fetch(`${API}/stats`,{headers:{Authorization:`Bearer ${token}`}}),
+      ])
       // Una sesión guardada puede haber caducado. Sin este corte la
       // aplicación seguiría en pie fallando en silencio en cada petición.
-      if(res.status===401){onLogout();return}
-      if(!res.ok) return
-      const data=await res.json()
-      if(Array.isArray(data)) setJobs(data)
+      if(jobsRes.status===401||statsRes.status===401){onLogout();return}
+      if(jobsRes.ok){
+        const data=await jobsRes.json()
+        if(Array.isArray(data)) setJobs(data)
+      }
+      if(statsRes.ok){
+        const data=await statsRes.json()
+        if(data?.jobs) setStats(data.jobs as JobStats)
+      }
     } catch { /* se reintenta en el siguiente refresco */ }
   },[token,onLogout])
 
-  useEffect(()=>{void loadJobs()},[loadJobs])
+  useEffect(()=>{void refresh()},[refresh])
 
   // La lista se refresca sola mientras quede algún trabajo vivo, y para
   // cuando todos son terminales: entonces ya no hay nada que esperar.
   const pending=jobs.some(job=>!job.terminal)
   useEffect(()=>{
     if(!pending) return
-    const timer=setInterval(()=>{void loadJobs()},3000)
+    const timer=setInterval(()=>{void refresh()},3000)
     return ()=>clearInterval(timer)
-  },[pending,loadJobs])
+  },[pending,refresh])
 
-  const handleJobCreated=(job:Job)=>setJobs(prev=>{
+  // Memorizado a propósito: la pantalla de subida lo tiene entre las
+  // dependencias de su intervalo, y este panel se re-renderiza cada pocos
+  // segundos al refrescar la lista. Sin memorizar, ese intervalo se
+  // destruiría y recrearía antes de llegar a dispararse.
+  const handleJobCreated=useCallback((job:Job)=>setJobs(prev=>{
     const exists=prev.find(j=>j.id===job.id)
     return exists?prev.map(j=>j.id===job.id?job:j):[job,...prev]
-  })
+  }),[])
   if(!section) return <Navigate to="/app/upload" replace/>
 
   return (
     <div style={{position:'relative',zIndex:1,minHeight:'100vh',display:'flex'}}>
       <Sidebar section={section} setSection={setSection} user={user} onLogout={onLogout}/>
       <main style={{flex:1,padding:'34px 36px',overflowY:'auto',maxWidth:'680px'}}>
+        <MetricsBar stats={stats}/>
         {section==='upload'     && <UploadSection token={token} onJobCreated={handleJobCreated}/>}
         {section==='documentos' && <DocumentosSection jobs={jobs} token={token}/>}
         {section==='perfil'     && <PerfilSection user={user} jobs={jobs}/>}
