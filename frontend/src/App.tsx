@@ -1,9 +1,35 @@
 import { useState, useEffect, useCallback } from 'react'
+import {
+  BrowserRouter, Routes, Route, Navigate,
+  useNavigate, useParams, useSearchParams,
+} from 'react-router-dom'
 
 // Prefijo del backend. Lo resuelve el proxy: vite.config.ts en desarrollo
 // y frontend/nginx.conf en el contenedor. Nunca se llama al puerto 8080
 // directamente, así se evita CORS.
 const API = '/api'
+
+// La sesión se guarda para que una URL como /jobs/:id siga funcionando
+// tras recargar. Sin esto la vista de detalle no sería direccionable:
+// pegar el enlace devolvería al login.
+const SESSION_KEY = 'okf.session'
+type Session = { user: User; token: string }
+
+function loadSession(): Session | null {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed?.token && parsed?.user ? parsed as Session : null
+  } catch { return null }   // navegación privada, almacenamiento bloqueado
+}
+
+function saveSession(session: Session | null) {
+  try {
+    if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session))
+    else localStorage.removeItem(SESSION_KEY)
+  } catch { /* la sesión dura lo que la pestaña */ }
+}
 
 async function downloadBundle(url: string, token: string, filename = 'bundle.zip') {
   const res = await fetch(`${API}${url}`, { headers: { Authorization: `Bearer ${token}` } })
@@ -17,10 +43,38 @@ async function downloadBundle(url: string, token: string, filename = 'bundle.zip
 }
 
 type User = { id: string; email: string; nombre?: string; apellido?: string; created_at?: string }
-type Bundle = { id: string; concept_count: number; is_valid: boolean; download_url: string }
-type Job = { id: string; status: 'queued'|'processing'|'completed'|'failed'; created_at: string; updated_at: string; filename?: string; bundle?: Bundle }
+type JobStatus = 'queued'|'processing'|'completed'|'failed'
+
+// Clasificación en tres niveles que produce el backend. `valid_with_warnings`
+// sigue siendo un éxito descargable: las advertencias se muestran, no
+// bloquean.
+type ValidationStatus = 'valid'|'valid_with_warnings'|'invalid'
+type Validation = { status: ValidationStatus; warnings: string[]; errors: string[] }
+
+// download_url solo llega cuando el bundle es realmente descargable, así
+// que su ausencia es la señal de que no hay nada que ofrecer.
+type Bundle = { id: string; concept_count: number; is_valid: boolean; validation?: Validation; download_url?: string }
+type DocumentSummary = { id: string; filename: string; format: string }
+type Job = { id: string; status: JobStatus; created_at: string; updated_at: string; filename?: string; bundle?: Bundle }
+type JobDetail = {
+  id: string
+  status: JobStatus
+  terminal: boolean
+  error_message?: string
+  created_at: string
+  updated_at: string
+  document: DocumentSummary
+  bundle?: Bundle | null
+}
 type UploadPhase = 'idle'|'selected'|'uploading'|'processing'|'done'|'failed'
 type DashSection = 'upload'|'documentos'|'perfil'
+
+const STATUS_INFO: Record<JobStatus,{label:string;bg:string;color:string;border:string}> = {
+  queued:     {label:'⏳ En cola',    bg:'#fffbe8',color:'#92700a',border:'#f5de80'},
+  processing: {label:'⚙️ Procesando', bg:'#fff4e8',color:'#a0500a',border:'#f5c080'},
+  completed:  {label:'✅ Completado', bg:'#f0faf0',color:'#2e7d32',border:'#a8d88a'},
+  failed:     {label:'❌ Fallido',    bg:'#fff0f0',color:'#c0392b',border:'#f5b8b8'},
+}
 
 function Background() {
   return (
@@ -274,6 +328,7 @@ function Sidebar({section,setSection,user,onLogout}:{section:DashSection;setSect
 }
 
 function UploadSection({token,onJobCreated}:{token:string;onJobCreated:(j:Job)=>void}) {
+  const navigate=useNavigate()
   const [phase,setPhase]=useState<UploadPhase>('idle')
   const [file,setFile]=useState<File|null>(null)
   const [drag,setDrag]=useState(false)
@@ -391,6 +446,11 @@ function UploadSection({token,onJobCreated}:{token:string;onJobCreated:(j:Job)=>
         ))}
       </div>
       <div style={{textAlign:'center',marginTop:'16px',fontSize:'0.74rem',color:'#a0b880'}}>Actualizando cada pocos segundos...</div>
+      {/* El trabajo ya tiene identificador: se puede seguir desde su propia
+          URL aunque se cierre esta pantalla. */}
+      <button onClick={()=>navigate(`/jobs/${activeJob.id}`)} style={{width:'100%',marginTop:'14px',padding:'10px',background:'transparent',color:'#6aac3e',border:'1.5px solid #b8d98a',borderRadius:'12px',fontSize:'0.84rem',fontWeight:600,cursor:'pointer'}}>
+        Seguirlo en su propia página →
+      </button>
     </div>
   )
 
@@ -412,14 +472,18 @@ function UploadSection({token,onJobCreated}:{token:string;onJobCreated:(j:Job)=>
           </div>
         </div>
       </div>
-      {activeJob.bundle?.is_valid?(
-        <button onClick={()=>downloadBundle(activeJob.bundle!.download_url,token,file?.name?.replace(/\.[^.]+$/,'')+'.zip')} style={{width:'100%',padding:'12px',background:'#6aac3e',color:'white',border:'none',borderRadius:'12px',fontSize:'0.92rem',fontWeight:700,cursor:'pointer',boxShadow:'0 4px 14px rgba(106,172,62,.3)',marginBottom:'10px'}}>
+      {/* download_url es la autoridad: solo llega cuando el bundle se publicó. */}
+      {activeJob.bundle?.download_url?(
+        <button onClick={()=>downloadBundle(activeJob.bundle!.download_url!,token,file?.name?.replace(/\.[^.]+$/,'')+'.zip')} style={{width:'100%',padding:'12px',background:'#6aac3e',color:'white',border:'none',borderRadius:'12px',fontSize:'0.92rem',fontWeight:700,cursor:'pointer',boxShadow:'0 4px 14px rgba(106,172,62,.3)',marginBottom:'10px'}}>
           ⬇ Descargar bundle OKF
         </button>
       ):(
         <div style={{background:'#fff8e8',border:'1px solid #f5de80',borderRadius:'10px',padding:'10px',marginBottom:'10px',fontSize:'0.8rem',color:'#92700a'}}>⚠️ El bundle se generó pero no pasó la validación.</div>
       )}
-      <button onClick={reset} style={{width:'100%',padding:'10px',background:'transparent',color:'#6aac3e',border:'1.5px solid #b8d98a',borderRadius:'12px',fontSize:'0.86rem',fontWeight:600,cursor:'pointer'}}>
+      <button onClick={()=>navigate(`/jobs/${activeJob.id}`)} style={{width:'100%',padding:'10px',background:'transparent',color:'#6aac3e',border:'1.5px solid #b8d98a',borderRadius:'12px',fontSize:'0.86rem',fontWeight:600,cursor:'pointer',marginBottom:'8px'}}>
+        Ver detalle del trabajo
+      </button>
+      <button onClick={reset} style={{width:'100%',padding:'10px',background:'transparent',color:'#8aaa60',border:'1.5px solid #d4e8b8',borderRadius:'12px',fontSize:'0.86rem',fontWeight:600,cursor:'pointer'}}>
         Subir otro documento
       </button>
     </div>
@@ -436,12 +500,8 @@ function UploadSection({token,onJobCreated}:{token:string;onJobCreated:(j:Job)=>
 }
 
 function DocumentosSection({jobs,token}:{jobs:Job[];token:string}) {
-  const si:{[k:string]:{label:string;bg:string;color:string;border:string}}={
-    queued:    {label:'⏳ En cola',    bg:'#fffbe8',color:'#92700a',border:'#f5de80'},
-    processing:{label:'⚙️ Procesando', bg:'#fff4e8',color:'#a0500a',border:'#f5c080'},
-    completed: {label:'✅ Completado', bg:'#f0faf0',color:'#2e7d32',border:'#a8d88a'},
-    failed:    {label:'❌ Fallido',    bg:'#fff0f0',color:'#c0392b',border:'#f5b8b8'},
-  }
+  const navigate=useNavigate()
+  const si=STATUS_INFO
   return (
     <div>
       <style>{`@keyframes spin3{to{transform:rotate(360deg)}}.jrow:hover{border-color:#b8d98a!important}`}</style>
@@ -459,7 +519,8 @@ function DocumentosSection({jobs,token}:{jobs:Job[];token:string}) {
         return (
           <div key={job.id} className="jrow" style={{background:'rgba(255,252,245,0.85)',border:`1.5px solid ${s.border}`,borderRadius:'12px',padding:'13px 16px',marginBottom:'9px',display:'flex',alignItems:'center',gap:'10px',backdropFilter:'blur(8px)',transition:'all .2s'}}>
             <div style={{fontSize:'1.4rem'}}>{job.filename?.endsWith('.md')?'📝':'📄'}</div>
-            <div style={{flex:1,minWidth:0}}>
+            {/* La fila entera lleva al detalle, que es una ruta real. */}
+            <div onClick={()=>navigate(`/jobs/${job.id}`)} style={{flex:1,minWidth:0,cursor:'pointer'}}>
               <div style={{fontWeight:600,color:'#2d3a1e',fontSize:'0.86rem',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginBottom:'4px'}}>{job.filename??'Documento'}</div>
               <div style={{display:'flex',alignItems:'center',gap:'7px',flexWrap:'wrap' as const}}>
                 <span style={{padding:'2px 8px',borderRadius:'20px',fontSize:'0.68rem',fontWeight:700,background:s.bg,color:s.color,border:`1px solid ${s.border}`}}>{s.label}</span>
@@ -468,8 +529,9 @@ function DocumentosSection({jobs,token}:{jobs:Job[];token:string}) {
               </div>
             </div>
             {(job.status==='queued'||job.status==='processing')&&<div style={{width:15,height:15,border:'2px solid #6aac3e',borderTopColor:'transparent',borderRadius:'50%',animation:'spin3 1s linear infinite',flexShrink:0}}/>}
-            {job.status==='completed'&&job.bundle?.is_valid&&(
-              <button onClick={()=>downloadBundle(job.bundle!.download_url,token,(job.filename??'bundle').replace(/\.[^.]+$/,'')+'.zip')} style={{padding:'6px 12px',background:'#6aac3e',color:'white',border:'none',borderRadius:'7px',fontSize:'0.73rem',fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>⬇ Descargar</button>
+            <button onClick={()=>navigate(`/jobs/${job.id}`)} style={{padding:'6px 10px',background:'transparent',color:'#6aac3e',border:'1px solid #c8e898',borderRadius:'7px',fontSize:'0.73rem',fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>Detalle</button>
+            {job.bundle?.download_url&&(
+              <button onClick={()=>downloadBundle(job.bundle!.download_url!,token,(job.filename??'bundle').replace(/\.[^.]+$/,'')+'.zip')} style={{padding:'6px 12px',background:'#6aac3e',color:'white',border:'none',borderRadius:'7px',fontSize:'0.73rem',fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>⬇ Descargar</button>
             )}
           </div>
         )
@@ -523,6 +585,176 @@ function PerfilSection({user,jobs}:{user:User;jobs:Job[]}) {
   )
 }
 
+// Lista de hallazgos de la validación. Las advertencias no impiden la
+// descarga; los errores sí, y por eso se presentan distinto.
+function FindingList({title,items,tone}:{title:string;items:string[];tone:'warning'|'error'}) {
+  if (items.length===0) return null
+  const c = tone==='error'
+    ? {bg:'#fff0f0',border:'#f5b8b8',color:'#c0392b'}
+    : {bg:'#fff8e8',border:'#f5de80',color:'#92700a'}
+  return (
+    <div style={{background:c.bg,border:`1px solid ${c.border}`,borderRadius:'10px',padding:'12px 14px',marginBottom:'10px',textAlign:'left'}}>
+      <div style={{fontSize:'0.76rem',fontWeight:700,color:c.color,marginBottom:'6px'}}>{title}</div>
+      <ul style={{margin:0,paddingLeft:'18px',color:c.color,fontSize:'0.78rem',lineHeight:1.6}}>
+        {items.map((item,i)=><li key={i}>{item}</li>)}
+      </ul>
+    </div>
+  )
+}
+
+// Vista de detalle de un trabajo, direccionable como /jobs/:id.
+//
+// La URL con el identificador es lo que permite demostrar el aislamiento:
+// basta pegar el id de otro usuario para ver que el servidor lo niega.
+function JobDetailView({token}:{token:string}) {
+  const {id}=useParams<{id:string}>()
+  const navigate=useNavigate()
+  const [job,setJob]=useState<JobDetail|null>(null)
+  const [state,setState]=useState<'loading'|'ok'|'notfound'|'expired'|'error'>('loading')
+
+  const load=useCallback(async()=>{
+    if(!id) return
+    try {
+      const res=await fetch(`${API}/jobs/${id}`,{headers:{Authorization:`Bearer ${token}`}})
+      // 404 responde tanto a un identificador inexistente como a uno
+      // ajeno: el servidor no distingue, para no revelar nada.
+      if(res.status===404){setState('notfound');return}
+      if(res.status===401){setState('expired');return}
+      if(!res.ok){setState('error');return}
+      setJob(await res.json() as JobDetail)
+      setState('ok')
+    } catch { setState('error') }
+  },[id,token])
+
+  useEffect(()=>{void load()},[load])
+
+  // Se refresca mientras el trabajo no sea terminal. Quién es terminal lo
+  // decide el backend con su bandera, no una lista de estados aquí.
+  const terminal=job?.terminal??true
+  useEffect(()=>{
+    if(state!=='ok'||terminal) return
+    const timer=setInterval(()=>{void load()},2500)
+    return ()=>clearInterval(timer)
+  },[state,terminal,load])
+
+  const card:React.CSSProperties={background:'rgba(255,252,245,0.9)',backdropFilter:'blur(12px)',border:'1.5px solid rgba(200,230,160,.55)',borderRadius:'20px',padding:'28px',boxShadow:'0 4px 24px rgba(80,60,30,.08)'}
+  const page=(children:React.ReactNode)=>(
+    <div style={{position:'relative',zIndex:1,minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:'32px 20px'}}>
+      <style>{`@keyframes spinD{to{transform:rotate(360deg)}}`}</style>
+      <div style={{width:'100%',maxWidth:'620px'}}>
+        <button onClick={()=>navigate('/app')} style={{background:'none',border:'none',color:'#7a9a50',cursor:'pointer',fontSize:'0.82rem',fontWeight:600,marginBottom:'14px',padding:0}}>← Volver a mis documentos</button>
+        {children}
+      </div>
+    </div>
+  )
+
+  if(state==='loading') return page(
+    <div style={{...card,textAlign:'center',padding:'56px 28px'}}>
+      <div style={{width:44,height:44,border:'4px solid #c8e898',borderTopColor:'#6aac3e',borderRadius:'50%',animation:'spinD 1s linear infinite',margin:'0 auto 16px'}}/>
+      <div style={{color:'#8aaa60',fontSize:'0.85rem'}}>Cargando el trabajo...</div>
+    </div>
+  )
+
+  if(state==='notfound') return page(
+    <div style={{...card,textAlign:'center',padding:'48px 28px'}}>
+      <div style={{fontSize:'2.6rem',marginBottom:'10px'}}>🔒</div>
+      <div style={{fontWeight:800,color:'#2d3a1e',fontSize:'1.1rem',marginBottom:'8px'}}>Trabajo no encontrado</div>
+      <p style={{fontSize:'0.83rem',color:'#7a9a60',lineHeight:1.65,marginBottom:'20px'}}>
+        No hay ningún trabajo tuyo con ese identificador. Si pertenece a otra
+        cuenta la respuesta es la misma: el servidor no revela si existe.
+      </p>
+      <code style={{fontSize:'0.72rem',color:'#a0b880',wordBreak:'break-all'}}>{id}</code>
+    </div>
+  )
+
+  if(state==='expired') return page(
+    <div style={{...card,textAlign:'center',padding:'48px 28px'}}>
+      <div style={{fontSize:'2.4rem',marginBottom:'10px'}}>⏰</div>
+      <div style={{fontWeight:700,color:'#2d3a1e',marginBottom:'8px'}}>Tu sesión expiró</div>
+      <div style={{fontSize:'0.82rem',color:'#8aaa60'}}>Vuelve a iniciar sesión para consultar este trabajo.</div>
+    </div>
+  )
+
+  if(state!=='ok'||!job) return page(
+    <div style={{...card,textAlign:'center',padding:'48px 28px'}}>
+      <div style={{fontSize:'2.4rem',marginBottom:'10px'}}>😔</div>
+      <div style={{fontWeight:700,color:'#c0392b',marginBottom:'8px'}}>No se pudo consultar el trabajo</div>
+      <button onClick={()=>{setState('loading');void load()}} style={{padding:'9px 20px',background:'#6aac3e',color:'white',border:'none',borderRadius:'10px',fontSize:'0.84rem',fontWeight:600,cursor:'pointer'}}>Reintentar</button>
+    </div>
+  )
+
+  const s=STATUS_INFO[job.status]??STATUS_INFO.queued
+  const bundle=job.bundle
+  const validation=bundle?.validation
+
+  return page(
+    <div style={card}>
+      <div style={{marginBottom:'18px'}}>
+        <div style={{fontSize:'0.7rem',fontWeight:700,color:'#6aac3e',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:'6px'}}>Detalle del trabajo</div>
+        <div style={{fontSize:'1.15rem',fontWeight:800,color:'#2d3a1e',wordBreak:'break-word'}}>{job.document?.filename||'Documento'}</div>
+        <div style={{fontSize:'0.7rem',color:'#a0b880',fontFamily:'monospace',marginTop:'4px',wordBreak:'break-all'}}>{job.id}</div>
+      </div>
+
+      <div style={{display:'flex',alignItems:'center',gap:'10px',flexWrap:'wrap',marginBottom:'18px'}}>
+        <span style={{padding:'4px 12px',borderRadius:'20px',fontSize:'0.76rem',fontWeight:700,background:s.bg,color:s.color,border:`1px solid ${s.border}`}}>{s.label}</span>
+        {!job.terminal&&<div style={{display:'flex',alignItems:'center',gap:'7px',fontSize:'0.74rem',color:'#a0b880'}}>
+          <div style={{width:13,height:13,border:'2px solid #6aac3e',borderTopColor:'transparent',borderRadius:'50%',animation:'spinD 1s linear infinite'}}/>
+          Actualizando cada pocos segundos...
+        </div>}
+        <span style={{fontSize:'0.7rem',color:'#b0c890',marginLeft:'auto'}}>{new Date(job.created_at).toLocaleString()}</span>
+      </div>
+
+      {job.status==='failed'&&(
+        <>
+          <FindingList tone="error" title="El trabajo falló" items={job.error_message?[job.error_message]:['El worker no pudo completar la conversión.']}/>
+          {validation&&<FindingList tone="error" title="La validación rechazó el bundle" items={validation.errors}/>}
+          <div style={{background:'#faf8f4',border:'1px dashed #d8ccb8',borderRadius:'10px',padding:'11px 14px',fontSize:'0.78rem',color:'#8a7a60'}}>
+            No hay descarga disponible: un bundle que no supera la validación no se publica.
+          </div>
+        </>
+      )}
+
+      {job.status==='completed'&&bundle&&(
+        <>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'14px'}}>
+            <div style={{textAlign:'center',padding:'14px',background:'white',borderRadius:'10px',border:'1px solid #d4efc0'}}>
+              <div style={{fontSize:'1.6rem',fontWeight:800,color:'#3d5220'}}>{bundle.concept_count}</div>
+              <div style={{fontSize:'0.7rem',color:'#8aaa60',marginTop:'2px'}}>Conceptos</div>
+            </div>
+            <div style={{textAlign:'center',padding:'14px',background:'white',borderRadius:'10px',border:'1px solid #d4efc0'}}>
+              <div style={{fontSize:'0.86rem',fontWeight:800,color:validation?.status==='invalid'?'#c0392b':validation?.status==='valid_with_warnings'?'#92700a':'#3d5220',marginTop:'6px'}}>
+                {validation?.status==='invalid'?'Inválido':validation?.status==='valid_with_warnings'?'Válido con advertencias':'Válido'}
+              </div>
+              <div style={{fontSize:'0.7rem',color:'#8aaa60',marginTop:'4px'}}>Validación</div>
+            </div>
+          </div>
+
+          {validation&&<FindingList tone="warning" title="Advertencias de la validación" items={validation.warnings}/>}
+          {validation&&<FindingList tone="error" title="Errores de la validación" items={validation.errors}/>}
+
+          {bundle.download_url?(
+            <button onClick={()=>downloadBundle(bundle.download_url!,token,(job.document?.filename||'bundle').replace(/\.[^.]+$/,'')+'.zip')}
+              style={{width:'100%',padding:'12px',background:'#6aac3e',color:'white',border:'none',borderRadius:'12px',fontSize:'0.92rem',fontWeight:700,cursor:'pointer',boxShadow:'0 4px 14px rgba(106,172,62,.3)'}}>
+              ⬇ Descargar bundle OKF
+            </button>
+          ):(
+            <div style={{background:'#faf8f4',border:'1px dashed #d8ccb8',borderRadius:'10px',padding:'11px 14px',fontSize:'0.78rem',color:'#8a7a60'}}>
+              El bundle no se publicó, así que no hay descarga disponible.
+            </div>
+          )}
+        </>
+      )}
+
+      {!job.terminal&&(
+        <div style={{background:'#fafff5',border:'1px solid #dff0c8',borderRadius:'10px',padding:'14px',fontSize:'0.8rem',color:'#7a9a60',lineHeight:1.6}}>
+          El worker está procesando el documento en segundo plano. Puedes cerrar
+          esta página: el trabajo continúa y el resultado seguirá aquí.
+        </div>
+      )}
+    </div>
+  )
+}
+
 function Dashboard({user,token,onLogout}:{user:User;token:string;onLogout:()=>void}) {
   const [section,setSection]=useState<DashSection>('upload')
   const [jobs,setJobs]=useState<Job[]>([])
@@ -550,20 +782,47 @@ function Dashboard({user,token,onLogout}:{user:User;token:string;onLogout:()=>vo
   )
 }
 
-export default function App() {
-  const [view,setView]=useState<'landing'|'auth'|'dashboard'>('landing')
-  const [authMode,setAuthMode]=useState<'login'|'register'>('login')
-  const [user,setUser]=useState<User|null>(null)
-  const [token,setToken]=useState('')
-  const handleLogin=(u:User,t:string)=>{setUser(u);setToken(t);setView('dashboard')}
-  const handleLogout=()=>{setUser(null);setToken('');setView('landing')}
-  const goAuth=(mode:'login'|'register')=>{setAuthMode(mode);setView('auth')}
+function AppRoutes() {
+  const navigate=useNavigate()
+  const [params]=useSearchParams()
+  const [session,setSession]=useState<Session|null>(loadSession)
+
+  const handleLogin=(user:User,token:string)=>{
+    const next={user,token}
+    setSession(next);saveSession(next);navigate('/app')
+  }
+  const handleLogout=()=>{setSession(null);saveSession(null);navigate('/')}
+
+  // Cada ruta privada construye su elemento solo si hay sesión. El
+  // condicional no puede estar dentro del componente ni en un ayudante que
+  // reciba el JSX ya creado: las props se evalúan al construirlo, así que
+  // `session.user` se leería incluso en las rutas públicas.
   return (
-    <div style={{background:'#fdf6ec',minHeight:'100vh',fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
-      <Background/>
-      {view==='landing'   && <Landing onGoAuth={goAuth}/>}
-      {view==='auth'      && <AuthView initialMode={authMode} onLogin={handleLogin} onBack={()=>setView('landing')}/>}
-      {view==='dashboard' && user && <Dashboard user={user} token={token} onLogout={handleLogout}/>}
-    </div>
+    <Routes>
+      <Route path="/" element={session
+        ? <Navigate to="/app" replace/>
+        : <Landing onGoAuth={m=>navigate(`/auth?mode=${m}`)}/>}/>
+      <Route path="/auth" element={session
+        ? <Navigate to="/app" replace/>
+        : <AuthView initialMode={params.get('mode')==='register'?'register':'login'} onLogin={handleLogin} onBack={()=>navigate('/')}/>}/>
+      <Route path="/app" element={session
+        ? <Dashboard user={session.user} token={session.token} onLogout={handleLogout}/>
+        : <Navigate to="/auth" replace/>}/>
+      <Route path="/jobs/:id" element={session
+        ? <JobDetailView token={session.token}/>
+        : <Navigate to="/auth" replace/>}/>
+      <Route path="*" element={<Navigate to="/" replace/>}/>
+    </Routes>
+  )
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <div style={{background:'#fdf6ec',minHeight:'100vh',fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
+        <Background/>
+        <AppRoutes/>
+      </div>
+    </BrowserRouter>
   )
 }

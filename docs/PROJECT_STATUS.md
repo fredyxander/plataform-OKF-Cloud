@@ -1822,6 +1822,62 @@ seguimiento del estado, no notificaciones, y refrescar `GET /jobs` ya lo
 cubre. Añadir un canal push supondría un segundo mecanismo que construir,
 demostrar y mantener sin crédito adicional.
 
+### Ruta de detalle `/jobs/:id` --- COMPLETADO Y VERIFICADO
+
+La aplicación navegaba por estado: no había URLs. El segmento 6 del video se
+demuestra pegando el identificador de un trabajo ajeno y viendo que el
+servidor lo niega, y eso no se puede filmar si la vista de detalle solo se
+alcanza pulsando una fila.
+
+Se añadió `react-router-dom` con cuatro rutas --- `/`, `/auth`, `/app` y
+`/jobs/:id` --- y la vista de detalle correspondiente.
+
+**La sesión se persiste en `localStorage`.** No es un extra: sin ella la URL
+no sería direccionable, porque pegarla en el navegador devolvería al login.
+Las lecturas y escrituras van envueltas en `try/catch`, ya que en navegación
+privada el almacenamiento puede estar bloqueado.
+
+La vista renderiza los cinco desenlaces de la tabla del README:
+
+| Situación | Qué muestra |
+| --- | --- |
+| `queued` / `processing` | Estado, refresco cada 2,5 s y el aviso de que el trabajo continúa aunque se cierre la página. |
+| `completed` + `valid` | Conceptos, clasificación y descarga. |
+| `completed` + `valid_with_warnings` | Lo anterior más la lista de advertencias. Sigue siendo un éxito descargable. |
+| `failed` | `error_message`, los errores de validación y la ausencia explícita de descarga. |
+| `404` | "Trabajo no encontrado", con la aclaración de que el servidor responde igual para un identificador ajeno. |
+
+El refresco se detiene con la bandera `terminal` que envía el backend, no con
+una lista de estados finales replicada en el cliente. La descarga se decide
+por la presencia de `download_url`, nunca por `is_valid`: son cosas distintas
+y solo la primera garantiza que haya algo que descargar.
+
+**Cambio de contrato asociado:** `GET /jobs/{id}` ahora incluye `document`
+con `id`, `filename` y `format`, igual que ya hacía el listado. Sin él la
+vista de detalle solo podía mostrar un UUID. Si el documento no se puede
+resolver, el detalle se sigue sirviendo con el identificador que el Job ya
+conocía.
+
+Verificado contra el stack: el detalle de un trabajo propio devuelve el
+documento y la validación, y el mismo identificador con el token de otro
+usuario responde `404 job not found`. Se generaron los tres desenlaces con
+`OKF_FAULT_INJECTION=drop-index` para el caso inválido, restaurando después
+el entorno por defecto.
+
+**Cómo se verifica la interfaz.** Comprobar con `curl` que una ruta devuelve
+`200 text/html` no prueba nada del frontend: nginx sirve `index.html` para
+cualquier ruta, incluso si la aplicación revienta al arrancar. Esa
+comprobación dio verde con la landing en blanco por un error de JavaScript.
+La verificación válida es renderizar de verdad, con Chrome en modo headless,
+y leer el texto resultante.
+
+El error que se escapó así merece quedar anotado, porque es fácil de repetir:
+las rutas privadas se escribían como `authed(<Dashboard user={session!.user}/>)`.
+JSX evalúa las props al construir el elemento, antes de que el ayudante decida
+si lo renderiza, de modo que sin sesión se leía `null.user` y el árbol entero
+fallaba --- incluidas las rutas públicas. La forma correcta es que cada ruta
+construya su elemento dentro del condicional.
+
 ### Cómo alcanza el frontend a la API
 
 El frontend llamaba a rutas relativas (`/auth/register`) confiando en el

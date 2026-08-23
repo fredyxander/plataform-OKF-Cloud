@@ -599,7 +599,7 @@ owner: a resource belonging to somebody else answers `404`, never `403`.
 | `POST` | `/documents` | Upload a document and start processing. Returns `202` immediately. |
 | `GET` | `/documents/{id}/download` | Retrieve the original document. |
 | `GET` | `/jobs` | List every job of the user. The general Jobs view. |
-| `GET` | `/jobs/{id}` | Follow one job. |
+| `GET` | `/jobs/{id}` | Follow one job. Carries `document` (id, filename, format) so the detail view has a name to show, not a UUID. |
 | `GET` | `/jobs/{id}/bundle` | Download the bundle as a ZIP. |
 | `GET` | `/stats` | Job counts by status, for a dashboard header. |
 | `GET` | `/health` | Liveness, unauthenticated. |

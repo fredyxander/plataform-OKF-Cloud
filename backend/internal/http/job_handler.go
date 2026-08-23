@@ -43,9 +43,14 @@ type BundleResponse struct {
 // Terminal indica si el Job ya no cambiará: es el criterio de parada
 // del cliente, para que no tenga que codificar por su cuenta qué
 // estados son finales.
+//
+// Document acompaña al Job por la misma razón que en el listado: una
+// vista de detalle que solo muestra identificadores no le dice al
+// usuario qué documento está mirando.
 type JobDetailResponse struct {
 	*domain.Job
 	Terminal bool            `json:"terminal"`
+	Document DocumentSummary `json:"document"`
 	Bundle   *BundleResponse `json:"bundle"`
 }
 
@@ -99,13 +104,26 @@ func buildBundleResponse(
 	return response
 }
 
+// buildJobDetailResponse arma la representación de un Job concreto.
+//
+// document puede ser nil: el detalle sigue siendo útil aunque no se
+// haya podido resolver el documento de origen.
 func buildJobDetailResponse(
 	job *domain.Job,
+	document *domain.Document,
 	bundle *domain.Bundle,
 ) JobDetailResponse {
+	summary := DocumentSummary{ID: job.DocumentID}
+
+	if document != nil {
+		summary.Filename = document.Filename
+		summary.Format = document.Format
+	}
+
 	return JobDetailResponse{
 		Job:      job,
 		Terminal: job.Status.IsTerminal(),
+		Document: summary,
 		Bundle:   buildBundleResponse(job.ID, job.Status, bundle),
 	}
 }
@@ -175,6 +193,21 @@ func (h *JobHandler) loadJobDetail(
 		return JobDetailResponse{}, err
 	}
 
+	// El documento se consulta por propietario, igual que el Job: si el
+	// Job es accesible, el documento que lo originó también lo es. Un
+	// fallo aquí no invalida el detalle, solo lo deja sin nombre.
+	document, err := h.db.GetDocumentByID(job.DocumentID, ownerID)
+	if err != nil {
+		log.Printf(
+			"could not load document %s of job %s: %v",
+			job.DocumentID,
+			job.ID,
+			err,
+		)
+
+		document = nil
+	}
+
 	var bundle *domain.Bundle
 
 	// El bundle se consulta cuando el Job ya terminó. También para un
@@ -196,7 +229,7 @@ func (h *JobHandler) loadJobDetail(
 		}
 	}
 
-	return buildJobDetailResponse(job, bundle), nil
+	return buildJobDetailResponse(job, document, bundle), nil
 }
 
 func (h *JobHandler) Get(w http.ResponseWriter, r *http.Request) {

@@ -25,7 +25,7 @@ func TestBuildJobDetailCompleted(t *testing.T) {
 		},
 	}
 
-	response := buildJobDetailResponse(job, bundle)
+	response := buildJobDetailResponse(job, nil, bundle)
 
 	if response.Bundle == nil {
 		t.Fatal("expected bundle for completed job")
@@ -57,6 +57,62 @@ func TestBuildJobDetailCompleted(t *testing.T) {
 	}
 }
 
+// El detalle lleva el documento de origen para que la vista pueda
+// mostrar qué se subió y no un UUID.
+func TestBuildJobDetailCarriesDocument(t *testing.T) {
+	job := &domain.Job{
+		ID:         "job-123",
+		DocumentID: "doc-123",
+		Status:     domain.JobStatusProcessing,
+	}
+
+	document := &domain.Document{
+		ID:       "doc-123",
+		Filename: "manual.md",
+		Format:   "markdown",
+	}
+
+	response := buildJobDetailResponse(job, document, nil)
+
+	if response.Document.Filename != "manual.md" {
+		t.Errorf(
+			"unexpected filename: %s",
+			response.Document.Filename,
+		)
+	}
+
+	if response.Document.Format != "markdown" {
+		t.Errorf("unexpected format: %s", response.Document.Format)
+	}
+
+	if response.Document.ID != "doc-123" {
+		t.Errorf("unexpected document id: %s", response.Document.ID)
+	}
+}
+
+// Si el documento no se pudo resolver, el detalle sigue siendo válido y
+// conserva al menos el identificador que el Job ya conocía.
+func TestBuildJobDetailWithoutDocumentKeepsID(t *testing.T) {
+	job := &domain.Job{
+		ID:         "job-123",
+		DocumentID: "doc-123",
+		Status:     domain.JobStatusProcessing,
+	}
+
+	response := buildJobDetailResponse(job, nil, nil)
+
+	if response.Document.ID != "doc-123" {
+		t.Errorf("unexpected document id: %s", response.Document.ID)
+	}
+
+	if response.Document.Filename != "" {
+		t.Errorf(
+			"expected empty filename, got %s",
+			response.Document.Filename,
+		)
+	}
+}
+
 // Un bundle publicado con advertencias sigue siendo descargable y las
 // advertencias viajan en el detalle del Job.
 func TestBuildJobDetailCompletedWithWarnings(t *testing.T) {
@@ -77,7 +133,7 @@ func TestBuildJobDetailCompletedWithWarnings(t *testing.T) {
 		},
 	}
 
-	response := buildJobDetailResponse(job, bundle)
+	response := buildJobDetailResponse(job, nil, bundle)
 
 	if response.Bundle == nil {
 		t.Fatal("expected bundle for completed job")
@@ -129,7 +185,7 @@ func TestBuildJobDetailInvalidBundleIsNotDownloadable(t *testing.T) {
 		},
 	}
 
-	response := buildJobDetailResponse(job, bundle)
+	response := buildJobDetailResponse(job, nil, bundle)
 
 	if response.Bundle == nil {
 		t.Fatal("expected the rejected bundle to be reported")
@@ -164,7 +220,7 @@ func TestBuildJobDetailProcessing(t *testing.T) {
 		Status: domain.JobStatusProcessing,
 	}
 
-	response := buildJobDetailResponse(job, nil)
+	response := buildJobDetailResponse(job, nil, nil)
 
 	if response.Bundle != nil {
 		t.Fatal("expected nil bundle for processing job")
@@ -180,7 +236,7 @@ func TestBuildJobDetailFailed(t *testing.T) {
 		ErrorMessage: &errorMessage,
 	}
 
-	response := buildJobDetailResponse(job, nil)
+	response := buildJobDetailResponse(job, nil, nil)
 
 	if response.Bundle != nil {
 		t.Fatal("expected nil bundle for failed job")
@@ -214,7 +270,7 @@ func TestJobDetailTerminalFlag(t *testing.T) {
 	for _, c := range cases {
 		job := &domain.Job{ID: "job-1", Status: c.status}
 
-		response := buildJobDetailResponse(job, nil)
+		response := buildJobDetailResponse(job, nil, nil)
 
 		if response.Terminal != c.terminal {
 			t.Errorf(
