@@ -16,14 +16,14 @@ var (
 	ErrJobNotClaimable = errors.New("job not claimable")
 )
 
-func (db *DB) CreateUser(email, passwordHash string) (*domain.User, error) {
+func (db *DB) CreateUser(email, passwordHash, nombre, apellido string) (*domain.User, error) {
 	u := &domain.User{}
 	err := db.conn.QueryRow(`
-		INSERT INTO users (email, password_hash)
-		VALUES ($1, $2)
-		RETURNING id, email, password_hash, created_at`,
-		email, passwordHash,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+		INSERT INTO users (email, password_hash, nombre, apellido)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, email, password_hash, nombre, apellido, created_at`,
+		email, passwordHash, nombre, apellido,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Nombre, &u.Apellido, &u.CreatedAt)
 	if err != nil {
 		var pqErr *pq.Error
 
@@ -39,10 +39,10 @@ func (db *DB) CreateUser(email, passwordHash string) (*domain.User, error) {
 func (db *DB) GetUserByEmail(email string) (*domain.User, error) {
 	u := &domain.User{}
 	err := db.conn.QueryRow(`
-		SELECT id, email, password_hash, created_at
+		SELECT id, email, password_hash, nombre, apellido, created_at
 		FROM users WHERE email = $1`,
 		email,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Nombre, &u.Apellido, &u.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -55,10 +55,10 @@ func (db *DB) GetUserByEmail(email string) (*domain.User, error) {
 func (db *DB) GetUserByID(id string) (*domain.User, error) {
 	u := &domain.User{}
 	err := db.conn.QueryRow(`
-		SELECT id, email, password_hash, created_at
+		SELECT id, email, password_hash, nombre, apellido, created_at
 		FROM users WHERE id = $1`,
 		id,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Nombre, &u.Apellido, &u.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
