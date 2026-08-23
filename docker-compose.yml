@@ -100,6 +100,9 @@ services:
       # Solo para demostrar el caso "bundle incompleto" de la rúbrica.
       # Vacío = pipeline normal.
       OKF_FAULT_INJECTION: ${OKF_FAULT_INJECTION:-}
+      # Solo para demostrar la asincronía efectiva (p. ej. "20s").
+      # Vacío = sin retardo.
+      OKF_PROCESSING_DELAY: ${OKF_PROCESSING_DELAY:-}
 
     depends_on:
       rabbitmq:

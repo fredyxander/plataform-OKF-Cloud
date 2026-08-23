@@ -1016,7 +1016,7 @@ Orden acordado:
 
 1. **Clasificación de validación del bundle. COMPLETADO Y VERIFICADO** (ver sección 8.1).
 2. **Conversión y generación del bundle. COMPLETADO Y VERIFICADO** (ver sección 8.2).
-3. **Pruebas de las seis condiciones verificables del PDF.** Dejar evidencia reproducible de asincronía efectiva, documento breve, documento estructurado, bundle incompleto, aislamiento entre usuarios y ausencia de duplicados ante redelivery.
+3. **Seis condiciones verificables del PDF. COMPLETADO Y VERIFICADO** (ver sección 8.3).
 4. **README reproducible desde entorno limpio.** Verificar que una persona pueda levantar y probar el sistema con `docker compose up -d --build` siguiendo únicamente el README y `.env.example`.
 5. **Escalabilidad con dos workers.** Ejecutar al menos dos workers y demostrar distribución de Jobs, manteniendo `prefetch = 1`, claim atómico y ausencia de duplicados.
 6. **Contrato de notificación de finalización.** Definir y probar el comportamiento que utilizará el frontend para seguir un `jobId`, detectar `completed`/`failed` y permitir redirigir al usuario a la descarga del bundle. Debe mantenerse también una vista/listado general de Jobs; la notificación no reemplaza la navegación a `/jobs`.
@@ -1298,6 +1298,124 @@ breve.txt        -> completed, 1 concepto,  valid
 estructurado.md  -> completed, 3 conceptos, valid
 ```
 
+### 8.3 Las seis condiciones verificables --- COMPLETADO Y VERIFICADO
+
+Punto 3 del checklist. Cada condición de la sección 6 del PDF quedó con un
+procedimiento reproducible en el README, ejecutado y comprobado contra el
+sistema desplegado.
+
+``` text
+1. Asincronía efectiva      -> README §9
+2. Documento breve          -> README §6  (01-breve.txt)
+3. Documento estructurado   -> README §3-§5 y §6
+4. Bundle incompleto        -> README §7
+5. Aislamiento              -> README §8
+6. Ausencia de duplicados   -> README §10
+```
+
+El README abre con una tabla que mapea condición -> sección -> evidencia
+esperada, para poder recorrerlas en orden durante la sustentación.
+
+#### Lo que hizo falta añadir
+
+Cuatro de las seis condiciones ya eran demostrables. Las otras dos estaban
+implementadas pero no podían observarse:
+
+**Asincronía efectiva.** El pipeline real termina en milisegundos, así que no
+había ventana para ver que la carga no esperó a la conversión. Se añadió
+`OKF_PROCESSING_DELAY` al worker, desactivado por defecto y con el mismo patrón
+que la inyección de fallo. Se valida al arrancar: una duración inválida o mayor
+que el lease de 5 minutos detiene el worker con un mensaje explícito, porque un
+retardo mayor que el lease haría que otro worker considerase el Job abandonado.
+El `5 * time.Minute` que estaba repetido en el claim salió a la constante
+`staleJobLease`.
+
+**Ausencia de duplicados.** No hacía falta código: la reentrega se provoca
+republicando el mismo `jobId` en `document_jobs` con la API de management de
+RabbitMQ. Así la segunda entrega la hace la cola de verdad, no un atajo de la
+aplicación.
+
+#### Evidencia obtenida
+
+Asincronía, con retardo de 20 s:
+
+``` text
+20:19:21  upload sent
+20:19:21  answered: {... "jobId":"5a15651d-...","status":"queued"}
+20:19:22  "status":"processing"
+   ...
+20:19:44  "status":"completed"
+```
+
+Y con la API detenida a mitad del procesamiento:
+
+``` text
+19:23:25  upload -> jobId
+19:23:26  docker compose stop api  ->  /health responde 000
+19:23:44  worker: job completed        (siguió sin la API)
+          docker compose start api ->  status completed, descarga 200
+```
+
+Duplicados, reentrega de un Job ya terminado:
+
+``` text
+=== before ===  completed | 02:20:46.112717+00 | 3e0b1a93-... | 02:20:46.108738+00
+=== redelivery ===  {"routed":true}
+                job ... already completed; acknowledging duplicate delivery
+=== after  ===  completed | 02:20:46.112717+00 | 3e0b1a93-... | 02:20:46.108738+00
+```
+
+Duplicados, reentrega mientras el Job se procesa. Con un solo worker y
+`prefetch = 1` este caso no puede ocurrir: RabbitMQ no entrega un segundo
+mensaje mientras hay uno sin ACK. Con dos workers se encadenan las dos
+defensas:
+
+``` text
+worker A  status=queued     -> claimed -> simulating a long conversion for 20s
+worker B  status=processing -> temporarily not claimable; deferring delivery
+worker A  job completed
+worker A  status=completed  -> already completed; acknowledging duplicate delivery
+          bundles para ese job = 1
+```
+
+El claim atómico frena al duplicado concurrente, que se difiere a
+`document_jobs_retry` y vuelve 30 segundos después; para entonces el Job ya
+terminó y la idempotencia lo reconoce. Qué contenedor hace de A y cuál de B
+varía entre ejecuciones porque RabbitMQ reparte por turnos; lo que no varía es
+la secuencia.
+
+Los seis documentos de prueba, en una sola pasada:
+
+``` text
+01-breve.txt             completed  1 concepto   valid
+02-estructurado.md       completed  3 conceptos  valid
+03-manual-tecnico.md     completed  4 conceptos  valid
+04-preambulo.md          completed  3 conceptos  valid
+05-titulo-con-enlace.md  completed  2 conceptos  valid
+06-seccion-vacia.md      completed  3 conceptos  valid_with_warnings
+```
+
+#### Documentos de prueba
+
+Se creó `docs/filesTest/` con seis documentos, uno por configuración
+representativa, y un README con la tabla de resultados esperados. El
+`file.md` que ya existía era un fragmento de PowerShell de una prueba manual
+anterior, no un documento; se dejó donde estaba y se anotó como tal.
+
+#### Ergonomía de las pruebas
+
+Los procedimientos se reescribieron para poder pegarse y ejecutarse de una vez:
+
+-   el token y el `jobId` se guardan en `.token`, `.token-other`, `.job` y
+    `.jobs`, porque las variables de shell no sobreviven entre terminales y su
+    pérdida se manifestaba como un `unauthorized` engañoso;
+-   cada bloque monta su propia precondición, ya que los escenarios de
+    asincronía y duplicados dejan el entorno con dos workers o con retardo;
+-   el estado del Job se extrae con `grep -o ... | head -1` y no con `sed`,
+    porque un regex codicioso devuelve el `status` de `validation` en lugar del
+    del Job;
+-   los archivos auxiliares están en `.gitignore`.
+
 ## Milestone 8 --- Frontend funcional
 
 **PENDIENTE.** Se inicia únicamente después del checklist previo de backend.
@@ -1398,7 +1516,7 @@ Antes de iniciar M8 se completará el **checklist de cierre backend y rúbrica**
 
 1. ~~revisar `VALID / VALID_WITH_WARNINGS / INVALID`~~ --- COMPLETADO (sección 8.1);
 2. ~~revisar conversión/generación del bundle con distintas configuraciones representativas~~ --- COMPLETADO (sección 8.2);
-3. ejecutar y documentar las seis condiciones verificables del PDF;
+3. ~~ejecutar y documentar las seis condiciones verificables del PDF~~ --- COMPLETADO (sección 8.3);
 4. verificar README + `.env.example` desde un entorno limpio;
 5. demostrar procesamiento con dos workers y ausencia de duplicados;
 6. definir/probar el contrato de seguimiento y notificación por `jobId`, conservando también la vista general de Jobs;
@@ -1467,9 +1585,9 @@ Autenticación/autorización      ██████████  completa para 
 Documentos + MinIO              ██████████  completo y verificado
 Pipeline OKF                    ██████████  completo y verificado E2E
 Confiabilidad M7                ██████████  completa y verificada
-Cierre backend contra rúbrica   █████░░░░░  en curso (2/6)
+Cierre backend contra rúbrica   ███████░░░  en curso (3/6)
 Frontend funcional M8           ░░░░░░░░░░  pendiente
 Entrega/sustentación            ░░░░░░░░░░  pendiente
 ```
 
-**Siguiente acción:** punto 3 del checklist --- dejar evidencia reproducible de las seis condiciones verificables del PDF: asincronía efectiva, documento breve, documento estructurado, bundle incompleto, aislamiento entre usuarios y ausencia de duplicados ante redelivery.
+**Siguiente acción:** punto 4 del checklist --- verificar que una persona pueda levantar y probar el sistema desde un entorno limpio siguiendo únicamente el README y `.env.example`. Hay un problema ya detectado: `docker-compose.yml` tiene las credenciales de `postgres` y `rabbitmq` hardcodeadas mientras `api` y `worker` las leen de `.env`, de modo que cambiar una credencial en `.env` rompe el arranque.

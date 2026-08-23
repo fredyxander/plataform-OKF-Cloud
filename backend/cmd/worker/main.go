@@ -21,6 +21,10 @@ import (
 )
 
 const maxJobRetries = 3
+
+// staleJobLease es el tiempo tras el cual un Job en processing se
+// considera abandonado y otro worker puede reclamarlo.
+const staleJobLease = 5 * time.Minute
 var errJobRetryLimitReached = errors.New("job retry limit reached")
 
 func retryJob(
@@ -191,6 +195,38 @@ func main() {
 		)
 	}
 
+	// Retardo artificial del procesamiento, también solo para la
+	// sustentación. El pipeline real tarda milisegundos, así que sin
+	// esto no hay ventana para demostrar que la API respondió sin
+	// esperar y que el trabajo continúa aunque el cliente cierre la
+	// conexión.
+	//
+	// Debe mantenerse por debajo del lease de recuperación de Jobs
+	// abandonados (5 minutos): un retardo mayor haría que otro worker
+	// considerase el Job como abandonado y lo reclamase.
+	processingDelay := time.Duration(0)
+
+	if raw := os.Getenv("OKF_PROCESSING_DELAY"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			log.Fatalf("invalid OKF_PROCESSING_DELAY: %v", err)
+		}
+
+		if parsed >= staleJobLease {
+			log.Fatalf(
+				"OKF_PROCESSING_DELAY must be shorter than the %s stale job lease",
+				staleJobLease,
+			)
+		}
+
+		processingDelay = parsed
+
+		log.Printf(
+			"WARNING: artificial processing delay enabled: %s",
+			processingDelay,
+		)
+	}
+
 	// 4. Nos suscribimos a la cola de trabajos.
 	messages, err := rabbitMQ.ConsumeJobs()
 	if err != nil {
@@ -338,7 +374,7 @@ func main() {
 
 
 		// rechazo de mismo job entre dos workers, solo uno toma el job y lo procesa.
-		staleBefore := time.Now().Add(-5 * time.Minute)
+		staleBefore := time.Now().Add(-staleJobLease)
 
 		claimedJob, err := db.ClaimJobForProcessing(
 			job.JobID,
@@ -408,6 +444,18 @@ func main() {
 			"job %s claimed for processing",
 			persistedJob.ID,
 		)
+
+		// Ventana artificial para poder observar el Job en processing.
+		// En el pipeline real esta espera no existe.
+		if processingDelay > 0 {
+			log.Printf(
+				"job %s: simulating a long conversion for %s",
+				persistedJob.ID,
+				processingDelay,
+			)
+
+			time.Sleep(processingDelay)
+		}
 
 		// Carga document para converion
 		document, err := db.GetDocumentByID(

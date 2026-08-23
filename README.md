@@ -540,6 +540,26 @@ expected result of each one.
 Run these in **Git Bash**. In Windows PowerShell `curl` is an alias of
 `Invoke-WebRequest`, so use `curl.exe` explicitly there.
 
+Steps 2 to 5 are the normal flow. Steps 6 to 10 each demonstrate one of the
+verifiable conditions the project specification requires.
+
+### The six verifiable conditions
+
+Every condition from section 6 of the specification, where to reproduce it and
+what proves it:
+
+| # | Condition | Section | What proves it |
+| --- | --- | --- | --- |
+| 1 | **Effective asynchrony.** The upload returns an id without waiting; the client may close the connection and the work goes on. | [§9](#9-effective-asynchrony) | The upload answers in under a second while the conversion takes twenty. The job reaches `completed` with the API stopped. |
+| 2 | **Short document.** A short document with no divisions yields `index.md`, `log.md` and a single concept, with no failure and no warnings. | [§6](#6-run-every-test-document) with `01-breve.txt` | `concept_count: 1`, `validation.status: valid`, empty `warnings`. |
+| 3 | **Structured document.** A document with several sections yields one concept per unit, linked in order from `index.md`. | [§3](#3-upload-a-document)–[§5](#5-download-and-inspect-the-bundle) with `03-manual-tecnico.md` | `concept_count: 4` and `index.md` linking `concept-01..04.md` in the source order. |
+| 4 | **Incomplete bundle.** With `index.md` or `log.md` missing, validation fails, the bundle is not published and no download is offered. | [§7](#7-rejected-bundle) | Job `failed`, `validation.status: invalid`, no `download_url`, download answers `409`, nothing written to MinIO. |
+| 5 | **Isolation.** A user who knows another user's resource id is denied without leaking information. | [§8](#8-owner-isolation) | `404` on both the job detail and the bundle download, `401` with no token. |
+| 6 | **No duplicates.** If the queue delivers the same job twice, there is a single final effect and at most one published bundle. | [§10](#10-no-duplicate-effect-on-redelivery) | Identical job and bundle rows before and after the redelivery, and `count = 1` in `bundles`. |
+
+Conditions 1 and 6 need the worker in a non-default mode; each section sets up
+what it needs and says how to restore the normal pipeline.
+
 ### 1. Start the stack
 
 ```bash
@@ -556,12 +576,31 @@ curl -s -X POST http://localhost:8080/auth/register \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"$EMAIL\",\"password\":\"password123\"}"
 
-TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+RESPONSE=$(curl -s -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"password123\"}" \
-  | sed -E 's/.*"token":"([^"]+)".*/\1/')
+  -d "{\"email\":\"$EMAIL\",\"password\":\"password123\"}")
+
+echo "$RESPONSE"
+
+TOKEN=$(echo "$RESPONSE" | sed -E 's/.*"token":"([^"]+)".*/\1/')
+
+# Also keep it on disk: shell variables are lost when the terminal
+# changes, and every later step needs the token.
+echo "$TOKEN" > .token
 
 echo "${#TOKEN} characters"   # a JWT, ~250 characters
+```
+
+`sed` returns its input unchanged when it finds no match, so a failed login
+leaves the error JSON inside `TOKEN` instead of failing. If the character count
+is not around 250, read `$RESPONSE` before continuing.
+
+Every following step uses `$TOKEN`. If a request answers `unauthorized`, check
+`echo "${#TOKEN}"` first: `0` means the variable is not set in **this** shell.
+Either re-run this step, or read the token from disk instead:
+
+```bash
+curl -s ... -H "Authorization: Bearer $(cat .token)"
 ```
 
 ### 3. Upload a document
@@ -571,9 +610,15 @@ The `type=` part is required: without it curl sends
 Only `text/plain` and `text/markdown` are accepted, up to 10 MB.
 
 ```bash
-curl -s -X POST http://localhost:8080/documents \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "file=@docs/filesTest/03-manual-tecnico.md;type=text/markdown"
+RESPONSE=$(curl -s -X POST http://localhost:8080/documents \
+  -H "Authorization: Bearer $(cat .token)" \
+  -F "file=@docs/filesTest/03-manual-tecnico.md;type=text/markdown")
+
+echo "$RESPONSE"
+
+# Keep the jobId on disk so the next steps work from any shell.
+echo "$RESPONSE" | sed -E 's/.*"jobId":"([^"]+)".*/\1/' > .job
+echo "jobId = $(cat .job)"
 ```
 
 The response is immediate — the conversion has not run yet:
@@ -581,14 +626,11 @@ The response is immediate — the conversion has not run yet:
 ```json
 { "document": { "...": "..." }, "jobId": "<uuid>", "status": "queued" }
 ```
-Guardar el jobId
 
 ### 4. Follow the job
 
 ```bash
-JOB=<jobId from the previous response>
-
-curl -s http://localhost:8080/jobs/$JOB -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:8080/jobs/$(cat .job) -H "Authorization: Bearer $(cat .token)"
 ```
 
 Expected for `03-manual-tecnico.md`: `"status": "completed"`,
@@ -598,14 +640,14 @@ Expected for `03-manual-tecnico.md`: `"status": "completed"`,
 The full list is at `GET /jobs`:
 
 ```bash
-curl -s http://localhost:8080/jobs -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:8080/jobs -H "Authorization: Bearer $(cat .token)"
 ```
 
 ### 5. Download and inspect the bundle
 
 ```bash
-curl -s -o bundle.zip http://localhost:8080/jobs/$JOB/bundle \
-  -H "Authorization: Bearer $TOKEN"
+curl -s -o bundle.zip http://localhost:8080/jobs/$(cat .job)/bundle \
+  -H "Authorization: Bearer $(cat .token)"
 
 unzip -o bundle.zip -d bundle/
 cat bundle/index.md
@@ -619,23 +661,54 @@ the fenced code block inside `concept-02.md` arrived intact.
 
 ### 6. Run every test document
 
+This covers the **short document** and **structured document** conditions in one
+go: it uploads all six test documents, keeps each `jobId` next to its filename,
+and then prints the result of each one.
+
 ```bash
+docker compose up -d --scale worker=1 worker   # one worker, normal pipeline
+sleep 5
+
+rm -f .jobs
 for f in docs/filesTest/0*; do
   case "$f" in *.txt) CT=text/plain;; *) CT=text/markdown;; esac
-  echo "--- $f"
-  curl -s -X POST http://localhost:8080/documents \
-    -H "Authorization: Bearer $TOKEN" \
-    -F "file=@$f;type=$CT"
-  echo
+  JOB=$(curl -s -X POST http://localhost:8080/documents \
+    -H "Authorization: Bearer $(cat .token)" \
+    -F "file=@$f;type=$CT" \
+    | sed -E 's/.*"jobId":"([^"]+)".*/\1/')
+  echo "$JOB $(basename "$f")" >> .jobs
 done
 
-sleep 3
-curl -s http://localhost:8080/jobs -H "Authorization: Bearer $TOKEN"
+sleep 5
+
+while read -r job name; do
+  printf '%-24s ' "$name"
+  curl -s http://localhost:8080/jobs/"$job" -H "Authorization: Bearer $(cat .token)" \
+    | grep -o '"status":"[^"]*"\|"concept_count":[0-9]*' | tr '\n' ' '
+  echo
+done < .jobs
 ```
 
-Compare against the expected table in `docs/filesTest/README.md`.
-`06-seccion-vacia.md` is the only one that must come back as
-`valid_with_warnings`; it is still downloadable.
+The three values per line are the job status, the concept count and the
+validation status:
+
+```text
+01-breve.txt             "status":"completed" "concept_count":1 "status":"valid"
+02-estructurado.md       "status":"completed" "concept_count":3 "status":"valid"
+03-manual-tecnico.md     "status":"completed" "concept_count":4 "status":"valid"
+04-preambulo.md          "status":"completed" "concept_count":3 "status":"valid"
+05-titulo-con-enlace.md  "status":"completed" "concept_count":2 "status":"valid"
+06-seccion-vacia.md      "status":"completed" "concept_count":3 "status":"valid_with_warnings"
+```
+
+`01-breve.txt` is the short-document condition: one concept, `valid`, no
+warnings. `06-seccion-vacia.md` is the only one that may report
+`valid_with_warnings`, and it is still downloadable. See
+`docs/filesTest/README.md` for what each document exercises.
+
+Run this with the worker in its normal mode — hence the first line. With
+`OKF_PROCESSING_DELAY` still enabled the six documents are processed one after
+another and the batch takes six times the delay.
 
 ### 7. Rejected bundle
 
@@ -643,13 +716,16 @@ Compare against the expected table in `docs/filesTest/README.md`.
 OKF_FAULT_INJECTION=drop-index docker compose up -d worker
 
 curl -s -X POST http://localhost:8080/documents \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "file=@docs/filesTest/02-estructurado.md;type=text/markdown"
+  -H "Authorization: Bearer $(cat .token)" \
+  -F "file=@docs/filesTest/02-estructurado.md;type=text/markdown" \
+  | sed -E 's/.*"jobId":"([^"]+)".*/\1/' > .job
 
-# with the new jobId:
-curl -s http://localhost:8080/jobs/$JOB -H "Authorization: Bearer $TOKEN"
-curl -s -o /dev/null -w "%{http_code}\n" \
-  http://localhost:8080/jobs/$JOB/bundle -H "Authorization: Bearer $TOKEN"
+sleep 3
+
+curl -s http://localhost:8080/jobs/$(cat .job) -H "Authorization: Bearer $(cat .token)"
+echo
+curl -s -o /dev/null -w "download: %{http_code}\n" \
+  http://localhost:8080/jobs/$(cat .job)/bundle -H "Authorization: Bearer $(cat .token)"
 
 docker compose up -d worker   # back to the normal pipeline
 ```
@@ -668,27 +744,235 @@ user's token:
 EMAIL="demo-2@example.com"
 curl -s -X POST http://localhost:8080/auth/register   -H "Content-Type: application/json"   -d "{\"email\":\"$EMAIL\",\"password\":\"password123\"}"
 
-OTHER_TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+curl -s -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"$EMAIL\",\"password\":\"password123\"}" \
-  | sed -E 's/.*"token":"([^"]+)".*/\1/')
+  | sed -E 's/.*"token":"([^"]+)".*/\1/' > .token-other
 
-echo "${#OTHER_TOKEN} characters"   # a JWT, ~250 characters
+echo "$(wc -c < .token-other) characters"   # a JWT, ~250 characters
 ```
+
+`.job` still holds a job that belongs to `demo-1`. Ask for it with the second
+user's token:
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" \
-  http://localhost:8080/jobs/$JOB -H "Authorization: Bearer $OTHER_TOKEN"
+curl -s -o /dev/null -w "job detail:     %{http_code}\n" \
+  http://localhost:8080/jobs/$(cat .job) -H "Authorization: Bearer $(cat .token-other)"
+
+curl -s -o /dev/null -w "bundle download: %{http_code}\n" \
+  http://localhost:8080/jobs/$(cat .job)/bundle -H "Authorization: Bearer $(cat .token-other)"
+
+curl -s -o /dev/null -w "no token at all: %{http_code}\n" \
+  http://localhost:8080/jobs/$(cat .job)
 ```
 
-Download bundle with other user token, rejected with 404
+Expected: `404`, `404` and `401`. The foreign resource answers `404`, not
+`403` — the server does not reveal that it exists.
+
+### 9. Effective asynchrony
+
+The real pipeline finishes in milliseconds, which leaves no window to observe
+that the upload did not wait for the conversion. `OKF_PROCESSING_DELAY` adds an
+artificial pause to the worker so the `processing` state is visible. It is off
+by default and must stay below the 5 minute stale-job lease.
+
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" \
-  http://localhost:8080/jobs/$JOB/bundle -H "Authorization: Bearer $OTHER_TOKEN"
+OKF_PROCESSING_DELAY=20s docker compose up -d worker
+docker compose logs worker --tail 5   # confirms the delay is enabled
 ```
 
-Expected: `404`, not `403` — the server does not reveal that the resource
-exists. Without any token: `401`.
+**The upload returns immediately and the job progresses on its own.** Paste the
+whole block at once: there is no time to copy the `jobId` by hand between the
+upload and the first status check.
+
+`--max-time 2` makes curl give up after two seconds, far less than the twenty
+the conversion now takes — yet the upload still answers.
+
+```bash
+printf '%s  upload sent\n' "$(date +%T)"
+
+RESPONSE=$(curl -s --max-time 2 -X POST http://localhost:8080/documents \
+  -H "Authorization: Bearer $(cat .token)" \
+  -F "file=@docs/filesTest/03-manual-tecnico.md;type=text/markdown")
+
+printf '%s  answered: %s\n' "$(date +%T)" "$RESPONSE"
+
+echo "$RESPONSE" | sed -E 's/.*"jobId":"([^"]+)".*/\1/' > .job
+
+for i in $(seq 1 10); do
+  printf "%s  " "$(date +%T)"
+  curl -s http://localhost:8080/jobs/$(cat .job) \
+    -H "Authorization: Bearer $(cat .token)" \
+    | grep -o '"status":"[^"]*"' | head -1
+  sleep 3
+done
+```
+
+`grep -o ... | head -1` prints only the job's own status: the response also
+carries the bundle validation status, and a greedy match would return that one
+instead.
+
+Expected: the upload answers in under a second, then `"processing"` for about
+twenty seconds, then `"completed"` — without the client doing anything.
+
+**The work survives the API.** Upload another document and stop the API while
+the worker is still busy:
+
+```bash
+curl -s -X POST http://localhost:8080/documents \
+  -H "Authorization: Bearer $(cat .token)" \
+  -F "file=@docs/filesTest/02-estructurado.md;type=text/markdown" \
+  | sed -E 's/.*"jobId":"([^"]+)".*/\1/' > .job
+
+docker compose stop api
+curl -s -o /dev/null -w "%{http_code}\n" --max-time 3 http://localhost:8080/health
+docker compose logs -f worker
+```
+
+The API answers `000` (unreachable) while the worker log still reaches
+`job completed: <jobId>`. Bring the API back and the result is there:
+
+```bash
+docker compose start api
+sleep 4
+curl -s http://localhost:8080/jobs/$(cat .job) -H "Authorization: Bearer $(cat .token)"
+echo
+curl -s -o /dev/null -w "download: %{http_code}\n" \
+  http://localhost:8080/jobs/$(cat .job)/bundle -H "Authorization: Bearer $(cat .token)"
+```
+
+Expected: `"status": "completed"` with its bundle, and `200` on the download.
+
+Return the worker to the normal pipeline when you are done:
+
+```bash
+docker compose up -d worker
+```
+
+### 10. No duplicate effect on redelivery
+
+Message queues guarantee *at-least-once* delivery, so the same job can arrive
+twice. The same job message can be pushed back into the queue through the
+RabbitMQ management API — no application code is involved, the queue really
+does deliver the job a second time:
+
+```bash
+curl -s -u okf:okf -X POST \
+  http://localhost:15672/api/exchanges/%2F/amq.default/publish \
+  -H "Content-Type: application/json" \
+  -d "{\"properties\":{},\"routing_key\":\"document_jobs\",\"payload\":\"{\\\"jobId\\\":\\\"$(cat .job)\\\"}\",\"payload_encoding\":\"string\"}"
+```
+
+`{"routed":true}` confirms the queue accepted it.
+
+**Redelivery of a finished job.** Paste the whole block: it forces a single
+worker with no delay, uploads a document, prints the state once the job is
+done, makes the queue deliver that same job again, and prints the state a
+second time.
+
+The first line matters — the other scenarios in this README leave two workers
+or an artificial delay behind, and either would change what you see here.
+
+```bash
+docker compose up -d --scale worker=1 worker   # one worker, normal pipeline
+sleep 5
+
+curl -s -X POST http://localhost:8080/documents \
+  -H "Authorization: Bearer $(cat .token)" \
+  -F "file=@docs/filesTest/02-estructurado.md;type=text/markdown" \
+  | sed -E 's/.*"jobId":"([^"]+)".*/\1/' > .job
+sleep 3
+
+echo "=== before the duplicate ==="
+docker compose exec -T postgres psql -U okf -d okf -c \
+  "SELECT j.status, j.updated_at, b.id AS bundle, b.created_at
+     FROM jobs j LEFT JOIN bundles b ON b.job_id = j.id
+    WHERE j.id = '$(cat .job)';"
+
+echo "=== redelivering the same job ==="
+curl -s -u okf:okf -X POST \
+  http://localhost:15672/api/exchanges/%2F/amq.default/publish \
+  -H "Content-Type: application/json" \
+  -d "{\"properties\":{},\"routing_key\":\"document_jobs\",\"payload\":\"{\\\"jobId\\\":\\\"$(cat .job)\\\"}\",\"payload_encoding\":\"string\"}"
+echo
+sleep 3
+
+echo "=== what the worker did with it ==="
+docker compose logs worker --since 30s | grep "$(cat .job)" | tail -3
+
+echo "=== after the duplicate ==="
+docker compose exec -T postgres psql -U okf -d okf -c \
+  "SELECT j.status, j.updated_at, b.id AS bundle, b.created_at
+     FROM jobs j LEFT JOIN bundles b ON b.job_id = j.id
+    WHERE j.id = '$(cat .job)';"
+```
+
+Expected in the log:
+
+```text
+job <id> already completed; acknowledging duplicate delivery
+```
+
+And the two `psql` outputs must be identical: same `updated_at`, same bundle
+id, same `created_at`. The pipeline never ran a second time.
+
+**Redelivery while the job is still running.** A single worker with
+`prefetch = 1` cannot receive a second message while one is unacknowledged, so
+this case needs two workers. The block takes about a minute: the deferred
+duplicate waits thirty seconds in the retry queue before coming back.
+
+```bash
+OKF_PROCESSING_DELAY=20s docker compose up -d --scale worker=2 worker
+sleep 5
+
+curl -s -X POST http://localhost:8080/documents \
+  -H "Authorization: Bearer $(cat .token)" \
+  -F "file=@docs/filesTest/02-estructurado.md;type=text/markdown" \
+  | sed -E 's/.*"jobId":"([^"]+)".*/\1/' > .job
+
+# Redeliver at once, while the first worker is still in its 20s conversion.
+sleep 1
+curl -s -u okf:okf -X POST \
+  http://localhost:15672/api/exchanges/%2F/amq.default/publish \
+  -H "Content-Type: application/json" \
+  -d "{\"properties\":{},\"routing_key\":\"document_jobs\",\"payload\":\"{\\\"jobId\\\":\\\"$(cat .job)\\\"}\",\"payload_encoding\":\"string\"}"
+echo
+
+sleep 55
+echo "=== worker-1 ==="
+docker logs okf-project-worker-1 --since 90s 2>&1 | grep "$(cat .job)"
+echo "=== worker-2 ==="
+docker logs okf-project-worker-2 --since 90s 2>&1 | grep "$(cat .job)"
+```
+
+Two different defences fire, in order:
+
+```text
+worker A  status=queued     -> claimed -> simulating a long conversion for 20s
+worker B  status=processing -> temporarily not claimable; deferring delivery
+worker A  job completed
+worker A  status=completed  -> already completed; acknowledging duplicate delivery
+```
+
+Which container plays A and which plays B varies: RabbitMQ hands the two
+messages to its consumers in round robin, so the roles swap between runs. What
+must not vary is the sequence.
+
+The atomic `queued -> processing` claim stops the concurrent duplicate, which
+is deferred to `document_jobs_retry` and comes back thirty seconds later; by
+then the job is finished and idempotency acknowledges it without reprocessing.
+
+Confirm a single published bundle:
+
+```bash
+docker compose exec -T postgres psql -U okf -d okf -c \
+  "SELECT count(*) FROM bundles WHERE job_id = '$(cat .job)';"
+
+docker compose up -d --scale worker=1 worker   # back to one worker, no delay
+```
+
+Expected: `1`. `bundles.job_id` also carries a `UNIQUE` constraint, so a second
+publication is impossible even if every check above were bypassed.
 
 ---
 
@@ -713,7 +997,7 @@ exists. Without any token: `401`.
 
 1. ~~Review bundle validation classification and explicitly support `VALID / VALID_WITH_WARNINGS / INVALID`.~~ **Done** — see [Bundle validation and result classification](#bundle-validation-and-result-classification).
 2. ~~Review bundle conversion with representative configurations.~~ **Done** — see [Segmentation into logical units](#segmentation-into-logical-units).
-3. Run and document the six verifiable conditions required by the project specification: effective asynchrony, short document, structured document, incomplete bundle rejection, multi-user isolation and duplicate-delivery idempotency.
+3. ~~Run and document the six verifiable conditions required by the project specification.~~ **Done** — see [The six verifiable conditions](#the-six-verifiable-conditions).
 4. Verify that a clean environment can be configured and started using only this README, `.env.example`, and `docker compose up -d --build`.
 5. Demonstrate horizontal worker scaling with at least two workers while preserving `prefetch = 1`, atomic claiming and no duplicate final bundle.
 6. Define and verify the completion-notification/status contract around `jobId` so the frontend can detect completion/failure and redirect to the bundle when appropriate. A normal Jobs list/view must remain available independently of notifications.
@@ -802,8 +1086,8 @@ The HTTP request does not execute the conversion. The API returns the created `j
 ### Pre-M8 backend and rubric closure ⏳
 
 - `VALID / VALID_WITH_WARNINGS / INVALID` classification ✅.
-- Advanced/representative conversion tests.
-- Six specification verification scenarios.
+- Representative conversion configurations ✅.
+- Six specification verification scenarios ✅.
 - README reproducibility from a clean environment.
 - Two-worker scalability demonstration.
 - `jobId` completion/status notification contract while preserving a general Jobs view.
@@ -859,11 +1143,14 @@ Bundle in MinIO + metadata in PostgreSQL
 COMPLETED / FAILED
 ```
 
-**Backend/rubric closure is in progress.** The bundle validation
-classification (`VALID / VALID_WITH_WARNINGS / INVALID`) is implemented and
-verified end-to-end; the next task is reviewing the conversion with
-representative document configurations. The frontend starts only after the
-remaining backend checklist has been verified.
+**Backend/rubric closure is in progress**, three of six items done: the
+validation classification, the conversion review against representative
+document configurations, and the six verifiable conditions, each with a
+reproducible procedure in [Manual verification with curl](#manual-verification-with-curl).
+
+Next: reproducibility from a clean environment, a two-worker scalability
+demonstration, and the `jobId` notification contract. The frontend starts only
+after the remaining backend checklist has been verified.
 
 ---
 
