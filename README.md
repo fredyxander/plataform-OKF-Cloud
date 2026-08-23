@@ -282,11 +282,22 @@ The following services should be running:
 ```text
 frontend
 api
-worker
+worker-1
+worker-2
 postgres
 rabbitmq
 minio
 ```
+
+**The worker runs two replicas by default** (`deploy.replicas` in
+`docker-compose.yml`). Conversion scales without touching the API, so a single
+`docker compose up` already leaves the processing shared between two workers.
+With `prefetch = 1` each one holds a single job at a time, and the atomic claim
+prevents both from taking the same one — measured in
+[§11](#11-scaling-workers-horizontally).
+
+A few verification procedures below need a single worker to be deterministic
+and reduce it explicitly with `--scale worker=1`; each one says so.
 
 ### Verifying from a clean environment
 
@@ -920,7 +931,7 @@ go: it uploads all six test documents, keeps each `jobId` next to its filename,
 and then prints the result of each one.
 
 ```bash
-docker compose up -d --scale worker=1 worker   # one worker, normal pipeline
+docker compose up -d worker   # normal pipeline, no artificial delay
 sleep 5
 
 rm -f .jobs
@@ -960,9 +971,11 @@ warnings. `06-seccion-vacia.md` is the only one that may report
 `valid_with_warnings`, and it is still downloadable. See
 `docs/filesTest/README.md` for what each document exercises.
 
-Run this with the worker in its normal mode — hence the first line. With
-`OKF_PROCESSING_DELAY` still enabled the six documents are processed one after
-another and the batch takes six times the delay.
+The first line resets the workers to the normal pipeline: with
+`OKF_PROCESSING_DELAY` left over from another section the batch would take
+minutes instead of seconds. The worker count does not matter here — with the
+default two replicas the documents are simply converted in parallel and the
+results are the same.
 
 ### 7. Rejected bundle
 
@@ -1032,8 +1045,11 @@ by default and must stay below the 5 minute stale-job lease.
 
 ```bash
 OKF_PROCESSING_DELAY=20s docker compose up -d worker
-docker compose logs worker --tail 5   # confirms the delay is enabled
+docker compose logs worker --tail 6   # confirms the delay is enabled
 ```
+
+The delay applies to every replica. A single document is still converted by a
+single worker, so the timings below do not depend on the worker count.
 
 **The upload returns immediately and the job progresses on its own.** Paste the
 whole block at once: there is no time to copy the `jobId` by hand between the
@@ -1119,16 +1135,18 @@ curl -s -u okf:okf -X POST \
 
 `{"routed":true}` confirms the queue accepted it.
 
-**Redelivery of a finished job.** Paste the whole block: it forces a single
-worker with no delay, uploads a document, prints the state once the job is
-done, makes the queue deliver that same job again, and prints the state a
-second time.
+**Redelivery of a finished job.** Paste the whole block: it reduces the
+deployment to a single worker with no delay, uploads a document, prints the
+state once the job is done, makes the queue deliver that same job again, and
+prints the state a second time.
 
-The first line matters — the other scenarios in this README leave two workers
-or an artificial delay behind, and either would change what you see here.
+The first line matters. It deliberately departs from the default two replicas
+so the outcome is unambiguous: with one worker the duplicate can only arrive
+after the job is finished, which is precisely the case under test. It also
+clears any `OKF_PROCESSING_DELAY` left over from another section.
 
 ```bash
-docker compose up -d --scale worker=1 worker   # one worker, normal pipeline
+docker compose up -d --scale worker=1 worker   # reduced to one, normal pipeline
 sleep 5
 
 curl -s -X POST http://localhost:8080/documents \
@@ -1172,8 +1190,10 @@ id, same `created_at`. The pipeline never ran a second time.
 
 **Redelivery while the job is still running.** A single worker with
 `prefetch = 1` cannot receive a second message while one is unacknowledged, so
-this case needs two workers. The block takes about a minute: the deferred
-duplicate waits thirty seconds in the retry queue before coming back.
+this case needs the two replicas the deployment brings by default — the
+previous block reduced them to one, hence the `--scale` here. It takes about a
+minute: the deferred duplicate waits thirty seconds in the retry queue before
+coming back.
 
 ```bash
 OKF_PROCESSING_DELAY=20s docker compose up -d --scale worker=2 worker
@@ -1222,7 +1242,7 @@ Confirm a single published bundle:
 docker compose exec -T postgres psql -U okf -d okf -c \
   "SELECT count(*) FROM bundles WHERE job_id = '$(cat .job)';"
 
-docker compose up -d --scale worker=1 worker   # back to one worker, no delay
+docker compose up -d worker   # back to the default: two replicas, no delay
 ```
 
 Expected: `1`. `bundles.job_id` also carries a `UNIQUE` constraint, so a second
@@ -1230,12 +1250,13 @@ publication is impossible even if every check above were bypassed.
 
 ### 11. Scaling workers horizontally
 
-Workers scale independently of the API. This measures the difference: the same
-six documents processed first by two workers, then by one, with an artificial
-delay so the work is long enough to observe.
+Workers scale independently of the API, which is why the deployment ships two
+replicas. This measures what that buys: the same six documents processed by the
+default two workers and then by one, with an artificial delay so the work is
+long enough to observe.
 
 ```bash
-OKF_PROCESSING_DELAY=10s docker compose up -d --scale worker=2 worker
+OKF_PROCESSING_DELAY=10s docker compose up -d worker
 sleep 6
 
 rm -f .jobs
@@ -1306,7 +1327,8 @@ Every `total` is `1`: the work was shared, never duplicated. The 3/3 split
 comes from RabbitMQ's round robin and may vary slightly under uneven load —
 what must hold is that no job is claimed twice.
 
-**The baseline.** Re-run the same upload-and-wait block with a single worker:
+**The baseline.** Reduce the deployment to one worker and re-run the same
+upload-and-wait block:
 
 ```bash
 OKF_PROCESSING_DELAY=10s docker compose up -d --scale worker=1 worker
@@ -1331,7 +1353,7 @@ docker compose exec -T postgres psql -U okf -d okf -c \
     WHERE j.id IN ($IDS)
     GROUP BY j.id, j.status ORDER BY j.id;" < /dev/null
 
-docker compose up -d --scale worker=1 worker   # back to one worker, no delay
+docker compose up -d worker   # back to the default: two replicas, no delay
 ```
 
 Expected: six rows, all `completed`, all with `bundles = 1`.
@@ -1358,6 +1380,7 @@ the loop stops after the first job.
 - Recovery of stale `processing` Jobs.
 - Deferred retry queue, bounded processing retries, DLQ and `FAILED` state with `error_message`.
 - Compensation/cleanup of partially uploaded bundle objects in MinIO.
+- Two worker replicas by default, so a single `docker compose up` already shares processing between independent workers.
 
 ### Required backend/rubric checklist before frontend
 

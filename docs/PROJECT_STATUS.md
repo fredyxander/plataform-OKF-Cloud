@@ -1576,6 +1576,27 @@ Un bundle por Job, con cualquier número de workers:
 6 filas, todas completed, todas con bundles = 1
 ```
 
+#### Decisión: dos réplicas por defecto
+
+A raíz de esta medición, `docker-compose.yml` declara `deploy.replicas: 2` en
+el servicio worker. Un único `docker compose up -d` deja el sistema con el
+procesamiento repartido entre dos workers.
+
+Razones:
+
+-   el segmento 3 del video exige mostrar el despliegue completo con un solo
+    comando; con dos réplicas por defecto, el `docker compose ps` posterior ya
+    evidencia la arquitectura replicada sin pasos añadidos;
+-   el criterio de procesamiento asíncrono menciona explícitamente workers
+    escalables de forma independiente: que el despliegue por defecto traiga dos
+    demuestra que la capacidad es real y no teórica;
+-   el camino multi-worker deja de ser un caso especial y se ejercita en cada
+    prueba, en lugar de solo cuando se monta la demostración.
+
+`--scale worker=1` sigue funcionando para las comprobaciones que necesitan un
+único worker para ser deterministas; el README indica en cada caso cuándo se
+reduce a propósito.
+
 #### Detalle encontrado al escribir el procedimiento
 
 `docker compose exec -T` lee de la entrada estándar, así que dentro de un bucle

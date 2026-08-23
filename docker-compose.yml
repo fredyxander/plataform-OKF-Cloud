@@ -89,6 +89,16 @@ services:
 
     restart: unless-stopped
 
+    # Dos réplicas por defecto: la conversión escala sin tocar la API,
+    # así que un único "docker compose up" ya deja el sistema con el
+    # procesamiento repartido. Con prefetch = 1 cada worker atiende un
+    # Job a la vez y el claim atómico impide que dos tomen el mismo.
+    #
+    # Se puede reducir para una prueba concreta con:
+    #   docker compose up -d --scale worker=1 worker
+    deploy:
+      replicas: 2
+
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
