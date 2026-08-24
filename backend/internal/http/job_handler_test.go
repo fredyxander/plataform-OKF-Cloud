@@ -228,7 +228,7 @@ func TestBuildJobDetailProcessing(t *testing.T) {
 }
 
 func TestBuildJobDetailFailed(t *testing.T) {
-	errorMessage := "document is empty"
+	errorMessage := "el documento está vacío"
 
 	job := &domain.Job{
 		ID:           "job-123",
@@ -246,7 +246,7 @@ func TestBuildJobDetailFailed(t *testing.T) {
 		t.Fatal("expected error message for failed job")
 	}
 
-	if *response.ErrorMessage != "document is empty" {
+	if *response.ErrorMessage != "el documento está vacío" {
 		t.Errorf(
 			"unexpected error message: %s",
 			*response.ErrorMessage,

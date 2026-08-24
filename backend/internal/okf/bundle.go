@@ -48,7 +48,7 @@ func indexLabel(title string) string {
 // conversión y un documento de concepto por unidad detectada.
 func BuildBundle(conversion *Conversion) (*Bundle, error) {
 	if conversion == nil || len(conversion.Concepts) == 0 {
-		return nil, fmt.Errorf("bundle requires at least one concept")
+		return nil, fmt.Errorf("el bundle requiere al menos un concepto")
 	}
 
 	conceptFiles := make([]File, 0, len(conversion.Concepts))

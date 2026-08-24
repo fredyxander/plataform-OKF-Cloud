@@ -11,6 +11,8 @@ resultado esperado: si alguno cambia, hay una regresión.
 | `04-preambulo.md` | Texto antes del primer encabezado: no debe perderse. | 3 | `valid` |
 | `05-titulo-con-enlace.md` | Título con sintaxis de enlace Markdown. | 2 | `valid` |
 | `06-seccion-vacia.md` | Sección con título pero sin cuerpo. | 3 | `valid_with_warnings` |
+| `07-vacio.md` | Documento sin contenido: solo espacios y saltos. | --- | el Job falla |
+| `08-vacio.txt` | Lo mismo en texto plano. | --- | el Job falla |
 
 Detalles de lo que debe observarse al abrir el bundle:
 
@@ -26,7 +28,15 @@ Detalles de lo que debe observarse al abrir el bundle:
   `index.md`. Sin el saneamiento del título, el enlace quedaría anidado, la
   resolución de enlaces fallaría y el bundle sería `invalid`.
 - **06** publica el bundle igualmente y registra
-  `concept concept-02.md has no content` como advertencia.
+  `el concepto concept-02.md no tiene contenido` como advertencia.
+- **07** y **08** son el único caso de fallo que no necesita inyección de
+  fallos: el conversor los rechaza con `el documento está vacío`, el Job
+  termina en `failed` y **no se llega a crear ningún bundle**. Sirven para
+  probar el camino de error desde la interfaz sin tocar la configuración del
+  worker. No confundirlos con el bundle rechazado por validación
+  (`OKF_FAULT_INJECTION=drop-index`), que sí crea la fila del bundle con sus
+  errores: son dos fallos distintos y la vista de detalle los explica
+  distinto.
 
 `file.md` es un fragmento de PowerShell heredado de una prueba manual anterior,
 no un documento de prueba.

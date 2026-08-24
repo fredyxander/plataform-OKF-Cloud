@@ -1,0 +1,108 @@
+<mxfile host="app.diagrams.net" agent="okf-project" version="24.0.0">
+  <diagram name="Arquitectura OKF" id="okf-arch">
+    <mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Plataforma OKF Cloud — arquitectura de servicios" style="text;html=1;align=center;verticalAlign=middle;fontSize=20;fontStyle=1;fontColor=#1F2A37;" vertex="1" parent="1">
+          <mxGeometry x="330" y="10" width="540" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="boundary" value="docker compose up -d&#10;un solo comando levanta todo" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;strokeColor=#9AA5B1;fillColor=none;verticalAlign=top;align=right;fontSize=11;fontColor=#6B7280;spacingTop=8;spacingRight=12;arcSize=2;" vertex="1" parent="1">
+          <mxGeometry x="40" y="130" width="1120" height="730" as="geometry" />
+        </mxCell>
+
+        <mxCell id="rabbitbox" value="RabbitMQ&#10;:5672 · :15672" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#F08C00;verticalAlign=top;fontSize=14;fontStyle=1;fontColor=#8A4B00;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="420" y="440" width="360" height="190" as="geometry" />
+        </mxCell>
+
+        <mxCell id="workersbox" value="workers · deploy.replicas: 2&#10;escalan sin tocar la API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF7EA;strokeColor=#2E7D32;verticalAlign=top;fontSize=13;fontStyle=1;fontColor=#1B5E20;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="400" y="690" width="400" height="150" as="geometry" />
+        </mxCell>
+
+        <mxCell id="usuario" value="Usuario&#10;navegador" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3F4F6;strokeColor=#6B7280;fontSize=13;fontColor=#374151;" vertex="1" parent="1">
+          <mxGeometry x="500" y="40" width="200" height="55" as="geometry" />
+        </mxCell>
+
+        <mxCell id="frontend" value="&lt;b&gt;frontend&lt;/b&gt;  :5173&#10;React + Vite (build estático)&#10;nginx sirve y hace de proxy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=12;fontColor=#0D47A1;" vertex="1" parent="1">
+          <mxGeometry x="480" y="170" width="240" height="75" as="geometry" />
+        </mxCell>
+
+        <mxCell id="api" value="&lt;b&gt;api&lt;/b&gt;  :8080&#10;Go — cmd/api&#10;&lt;i&gt;sin estado&lt;/i&gt; · JWT · owner_id" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=12;fontColor=#1B5E20;" vertex="1" parent="1">
+          <mxGeometry x="480" y="300" width="240" height="85" as="geometry" />
+        </mxCell>
+
+        <mxCell id="q1" value="document_jobs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#F08C00;fontSize=12;fontColor=#8A4B00;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="440" y="495" width="320" height="36" as="geometry" />
+        </mxCell>
+
+        <mxCell id="q2" value="document_jobs_retry   ·   TTL 30 s" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#F08C00;fontSize=12;fontColor=#8A4B00;arcSize=20;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="440" y="537" width="320" height="36" as="geometry" />
+        </mxCell>
+
+        <mxCell id="q3" value="document_jobs_dlq   ·   tras 3 intentos" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C62828;fontSize=12;fontColor=#B71C1C;arcSize=20;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="440" y="579" width="320" height="36" as="geometry" />
+        </mxCell>
+
+        <mxCell id="worker1" value="&lt;b&gt;worker 1&lt;/b&gt;&#10;Go — cmd/worker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontColor=#1B5E20;" vertex="1" parent="1">
+          <mxGeometry x="420" y="740" width="175" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="worker2" value="&lt;b&gt;worker 2&lt;/b&gt;&#10;Go — cmd/worker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontColor=#1B5E20;" vertex="1" parent="1">
+          <mxGeometry x="605" y="740" width="175" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="postgres" value="&lt;b&gt;PostgreSQL&lt;/b&gt;  :5432&#10;usuarios · documentos&#10;jobs · bundles&#10;&lt;i&gt;fuente de verdad del estado&lt;/i&gt;" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=15;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=12;fontColor=#0D47A1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="80" y="470" width="230" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="minio" value="&lt;b&gt;MinIO&lt;/b&gt;  :9000&#10;documents/{owner}/{doc}/…&#10;bundles/{owner}/{job}/…&#10;&lt;i&gt;fuera del disco efímero&lt;/i&gt;" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=15;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#AD1457;fontSize=12;fontColor=#880E4F;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="890" y="470" width="230" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" value="HTTP" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6B7280;fontSize=11;fontColor=#374151;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="usuario" target="frontend">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e2" value="/api/*  →  api:8080&#10;mismo origen · sin CORS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#1565C0;fontSize=11;fontColor=#0D47A1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="frontend" target="api">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e3" value="metadatos" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#1565C0;fontSize=11;fontColor=#0D47A1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="api" target="postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e4" value="guarda el original&#10;sirve la descarga" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#AD1457;fontSize=11;fontColor=#880E4F;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="api" target="minio">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e5" value="publica { jobId }&#10;y responde &lt;b&gt;202 Accepted&lt;/b&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#F08C00;fontSize=11;fontColor=#8A4B00;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="api" target="rabbitbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e6" value="entrega at-least-once&#10;prefetch = 1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#F08C00;fontSize=11;fontColor=#8A4B00;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="rabbitbox" target="workersbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e7" value="claim atómico&#10;queued → processing" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#1565C0;fontSize=11;fontColor=#0D47A1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="workersbox" target="postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e8" value="lee el original&#10;escribe el bundle" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#AD1457;fontSize=11;fontColor=#880E4F;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="workersbox" target="minio">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e9" value="reintento diferido" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#F08C00;fontSize=10;fontColor=#8A4B00;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="q2" target="q1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="410" y="555" />
+              <mxPoint x="410" y="513" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

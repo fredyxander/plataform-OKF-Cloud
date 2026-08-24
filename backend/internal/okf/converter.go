@@ -35,7 +35,7 @@ func Convert(filename, format string, content []byte) (*Conversion, error) {
 	text = strings.TrimSpace(text)
 
 	if text == "" {
-		return nil, fmt.Errorf("document is empty")
+		return nil, fmt.Errorf("el documento está vacío")
 	}
 
 	switch format {
@@ -93,6 +93,6 @@ func Convert(filename, format string, content []byte) (*Conversion, error) {
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported document format: %s", format)
+		return nil, fmt.Errorf("formato de documento no admitido: %s", format)
 	}
 }

@@ -3,6 +3,7 @@
 # JWT y jobId guardados durante las pruebas manuales con curl.
 .token
 .token-other
+.token-beto
 .job
 .jobs
 

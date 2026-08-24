@@ -757,8 +757,13 @@ function JobDetailView({token,onExpired}:{token:string;onExpired:()=>void}) {
         <>
           <FindingList tone="error" title="El trabajo falló" items={job.error_message?[job.error_message]:['El worker no pudo completar la conversión.']}/>
           {validation&&<FindingList tone="error" title="La validación rechazó el bundle" items={validation.errors}/>}
+          {/* Un trabajo puede fallar antes de generar el bundle (documento
+              vacío, formato no admitido) o después, al validarlo. El motivo
+              de que no haya descarga no es el mismo en los dos casos. */}
           <div style={{background:'#faf8f4',border:'1px dashed #d8ccb8',borderRadius:'10px',padding:'11px 14px',fontSize:'0.78rem',color:'#8a7a60'}}>
-            No hay descarga disponible: un bundle que no supera la validación no se publica.
+            {bundle
+              ? 'No hay descarga disponible: un bundle que no supera la validación no se publica.'
+              : 'No hay descarga disponible: el documento no llegó a convertirse, así que no se generó ningún bundle.'}
           </div>
         </>
       )}
